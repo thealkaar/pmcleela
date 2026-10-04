@@ -26,9 +26,16 @@ async function verifyPassword(password, storedHash) {
 class PostgresDB {
   constructor(LocalDB) {
     this.localHelpers = new LocalDB({ useLocalFiles: false });
+    const caCertificate = process.env.SUPABASE_DB_CA;
+    if (process.env.NODE_ENV === 'production' && !caCertificate) {
+      throw new Error('SUPABASE_DB_CA is required in production. Add the Supabase database CA certificate to Render environment variables.');
+    }
     this.pool = new Pool({
       connectionString: process.env.DATABASE_URL,
-      ssl: { rejectUnauthorized: true },
+      ssl: {
+        rejectUnauthorized: true,
+        ...(caCertificate ? { ca: caCertificate.replace(/\\n/g, '\n') } : {})
+      },
       max: 3,
       connectionTimeoutMillis: 10000,
       idleTimeoutMillis: 30000

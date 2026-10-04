@@ -67,6 +67,7 @@ npx expo start
 The repository includes a Render Blueprint at [`render.yaml`](./render.yaml). In Render, create a **Blueprint** from the GitHub repository and select the free service. The Blueprint configures:
 
 * Root directory: `server`
+* Node.js: 22 (pinned in `server/.node-version` and `server/package.json`)
 * Build command: `npm ci`
 * Start command: `npm start`
 * Health check path: `/api/health`
@@ -78,6 +79,7 @@ If creating a Web Service manually instead, use the same root directory, command
 * `B2_KEY_ID`: the key ID from a Backblaze application key restricted to this bucket with read, write, and delete access.
 * `B2_APPLICATION_KEY`: the secret application key value; do not use a master key.
 * `DATABASE_URL`: the Supabase PostgreSQL **Session pooler** URI. In Supabase, open **Connect → Direct connection → Session pooler → URI**, replace its password placeholder with the newly reset database password, and add the complete URI to Render. Keep this value server-side as a Render secret.
+* `SUPABASE_DB_CA`: the database CA certificate downloaded from Supabase **Database Settings → SSL Configuration**. Paste the full PEM certificate into this Render environment secret; the backend verifies the Supabase TLS certificate using it.
 * `BREVO_API_KEY`: required for student OTP email. Also set `FROM_EMAIL` to the sender address verified with Brevo. OTP registration returns an error until the email API key is configured.
 
 The `B2_BUCKET_NAME`, `B2_ENDPOINT`, and `B2_REGION` values are already set by the Blueprint. On startup, the backend creates the `pmc_users` and `pmc_reels` tables in Supabase if they do not exist. New user and reel metadata, likes, comments, and account/reel deletions are stored in Supabase; new account passwords are hashed before storage. The old local JSON files are not automatically imported—existing local accounts/reels need a separate migration if you want to keep them. Chat matchmaking and OTPs remain in process memory.
