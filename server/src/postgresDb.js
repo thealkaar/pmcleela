@@ -27,13 +27,14 @@ class PostgresDB {
   constructor(LocalDB) {
     this.localHelpers = new LocalDB({ useLocalFiles: false });
     const caCertificate = process.env.SUPABASE_DB_CA;
-    if (process.env.NODE_ENV === 'production' && !caCertificate) {
-      throw new Error('SUPABASE_DB_CA is required in production. Add the Supabase database CA certificate to Render environment variables.');
+    const rejectUnauthorized = process.env.SUPABASE_DB_SSL_REJECT_UNAUTHORIZED !== 'false';
+    if (!caCertificate && !rejectUnauthorized) {
+      console.warn('[Supabase] TLS is encrypted, but the database certificate is not verified. Configure SUPABASE_DB_CA to enable certificate verification.');
     }
     this.pool = new Pool({
       connectionString: process.env.DATABASE_URL,
       ssl: {
-        rejectUnauthorized: true,
+        rejectUnauthorized,
         ...(caCertificate ? { ca: caCertificate.replace(/\\n/g, '\n') } : {})
       },
       max: 3,

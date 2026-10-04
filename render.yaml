@@ -18,8 +18,8 @@ services:
         value: 10mb
       - key: DATABASE_URL
         sync: false
-      - key: SUPABASE_DB_CA
-        sync: false
+      - key: SUPABASE_DB_SSL_REJECT_UNAUTHORIZED
+        value: "false"
       - key: B2_BUCKET_NAME
         value: pmcleela
       - key: B2_ENDPOINT
