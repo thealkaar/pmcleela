@@ -78,12 +78,11 @@ If creating a Web Service manually instead, use the same root directory, command
 
 * `B2_KEY_ID`: the key ID from a Backblaze application key restricted to this bucket with read, write, and delete access.
 * `B2_APPLICATION_KEY`: the secret application key value; do not use a master key.
-* `DATABASE_URL`: the Supabase PostgreSQL **Session pooler** URI. In Supabase, open **Connect → Direct connection → Session pooler → URI**, replace its password placeholder with the newly reset database password, and add the complete URI to Render. Keep this value server-side as a Render secret.
-* `SUPABASE_DB_CA` (recommended): the database CA certificate downloaded from Supabase **Database Settings → SSL Configuration**. If set, the backend verifies the Supabase TLS certificate using it.
-* `SUPABASE_DB_SSL_REJECT_UNAUTHORIZED`: set to `false` only if Supabase's CA certificate is unavailable and the pooler rejects Node's default trusted CAs. The database connection remains TLS-encrypted, but the server certificate is not verified; setting `SUPABASE_DB_CA` later allows you to restore verification.
+* `DATABASE_URL`: the Supabase PostgreSQL **Transaction pooler** URI (shared pooler, port `6543`) with `?pgbouncer=true&sslmode=require`. Prisma uses this IPv4-accessible URI for application queries. Replace its password placeholder with your rotated database password.
+* `DIRECT_URL`: the Supabase PostgreSQL **Session pooler** URI (shared pooler, port `5432`) with `?sslmode=require`. Prisma uses this for schema migrations. Use the same rotated password and keep this server-side as a Render secret.
 * `BREVO_API_KEY`: required for student OTP email. Also set `FROM_EMAIL` to the sender address verified with Brevo. OTP registration returns an error until the email API key is configured.
 
-The `B2_BUCKET_NAME`, `B2_ENDPOINT`, and `B2_REGION` values are already set by the Blueprint. On startup, the backend creates the `pmc_users` and `pmc_reels` tables in Supabase if they do not exist. New user and reel metadata, likes, comments, and account/reel deletions are stored in Supabase; new account passwords are hashed before storage. The old local JSON files are not automatically imported—existing local accounts/reels need a separate migration if you want to keep them. Chat matchmaking and OTPs remain in process memory.
+The backend uses Prisma ORM and applies checked-in database migrations at each start. Set both database URLs in Render before the first deployment. New user and reel metadata, likes, comments, and account/reel deletions are stored in Supabase; new account passwords are hashed before storage. The old local JSON files are not automatically imported—existing local accounts/reels need a separate migration if you want to keep them. Chat matchmaking and OTPs remain in process memory.
 
 The 100 MB limit applies to the selected source file uploaded to the server. The editor and server both restrict the published, trimmed segment to at most 20 seconds. The gallery picker may select a longer source, but only a maximum 20-second segment can be published; camera recording is limited to 20 seconds.
 
@@ -98,4 +97,4 @@ cd mobile
 
 ### Render Free limitations
 
-Render Free instances spin down while idle and may take about a minute to wake. Video objects persist in Backblaze B2, but this backend's current JSON user/reel metadata is on Render's ephemeral filesystem, while chat matchmaking and OTPs are held in process memory. This deployment is suitable for a test/pilot only—not durable public use. Before inviting users to rely on it, move user/reel records to Supabase/Postgres and shared OTP/chat state to durable/shared services. FFmpeg trimming still runs on the free web instance and can fail under its limited resources.
+Render Free instances spin down while idle and may take about a minute to wake. Video objects persist in Backblaze B2 and user/reel metadata persists in Supabase, while chat matchmaking and OTPs are held in process memory. This deployment is suitable for a test/pilot only—not durable public use. Shared OTP/chat state, authentication hardening, and moderation are still needed before public launch. FFmpeg trimming still runs on the free web instance and can fail under its limited resources.

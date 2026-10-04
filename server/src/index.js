@@ -9,7 +9,7 @@ const { Server } = require('socket.io');
 
 const Matchmaker = require('./matchmaker');
 const { LocalDB } = require('./db');
-const PostgresDB = require('./postgresDb');
+const PrismaDB = require('./prismaDb');
 const { sendOtpEmail } = require('./emailService');
 const { trimAndCropVideo } = require('./videoProcessor');
 const b2Storage = require('./b2Storage');
@@ -18,7 +18,7 @@ if (process.env.NODE_ENV === 'production' && !process.env.DATABASE_URL) {
   throw new Error('DATABASE_URL is required in production. Configure the Supabase PostgreSQL connection string.');
 }
 
-const db = process.env.DATABASE_URL ? new PostgresDB(LocalDB) : new LocalDB();
+const db = process.env.DATABASE_URL ? new PrismaDB(LocalDB) : new LocalDB();
 const app = express();
 const server = http.createServer(app);
 
@@ -333,7 +333,7 @@ app.post('/api/auth/update-persona', async (req, res) => {
     if (!updatedUser) {
       return res.status(404).json({ success: false, message: 'User not found.' });
     }
-    res.json({ success: true, user: updatedUser });
+    res.json({ success: true, user: publicUser(updatedUser) });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
