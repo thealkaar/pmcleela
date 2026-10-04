@@ -37,6 +37,7 @@ const formatYearShort = (val) => {
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const REEL_HEIGHT = SCREEN_HEIGHT - 65;
+const MAX_REEL_DURATION_SECONDS = 40;
 
 // Fullscreen WhatsApp-Style Slide & Trim Story Editor Component
 function VideoStoryEditor({
@@ -147,8 +148,13 @@ function VideoStoryEditor({
   };
 
   const handleTrimChange = (newStart, newEnd) => {
-    setTrimStart(newStart);
-    setTrimEnd(newEnd);
+    const boundedStart = Math.max(0, Math.min(newStart, totalDuration));
+    const boundedEnd = Math.max(
+      boundedStart,
+      Math.min(newEnd, totalDuration, boundedStart + MAX_REEL_DURATION_SECONDS)
+    );
+    setTrimStart(boundedStart);
+    setTrimEnd(boundedEnd);
   };
 
   const cycleCropMode = () => {
@@ -212,6 +218,7 @@ function VideoStoryEditor({
           <VideoSlideTrimmer
             videoUri={videoUri}
             duration={totalDuration}
+            maxDuration={MAX_REEL_DURATION_SECONDS}
             trimStart={trimStart}
             trimEnd={trimEnd}
             onTrimChange={handleTrimChange}
@@ -796,7 +803,7 @@ export default function LeelaReelsScreen({ serverHost, currentUser, isTabActive 
       const res = await ImagePicker.launchCameraAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Videos,
         quality: 0.8,
-        videoMaxDuration: 60
+        videoMaxDuration: MAX_REEL_DURATION_SECONDS
       });
 
       if (!res.canceled && res.assets && res.assets[0]) {

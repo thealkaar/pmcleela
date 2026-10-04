@@ -465,7 +465,7 @@ app.post('/api/reels/upload', (req, res) => {
         throw error;
       }
       if (!hasTrimStart) {
-        const error = new Error('Select a trim range of up to 20 seconds before uploading.');
+        const error = new Error('Select a trim range of up to 40 seconds before uploading.');
         error.statusCode = 400;
         throw error;
       }

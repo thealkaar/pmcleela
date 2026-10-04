@@ -2,7 +2,7 @@ const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const ffmpegPath = require('ffmpeg-static');
-const MAX_REEL_DURATION_SECONDS = 20;
+const MAX_REEL_DURATION_SECONDS = 40;
 
 const CROP_FILTERS = {
   '9:16': 'scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280',

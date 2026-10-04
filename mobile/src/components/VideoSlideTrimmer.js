@@ -27,6 +27,7 @@ const TIMELINE_HEIGHT = 50;
 export default function VideoSlideTrimmer({
   videoUri,
   duration = 30, // in seconds
+  maxDuration = 40,
   trimStart,
   trimEnd,
   onTrimChange,
@@ -110,7 +111,7 @@ export default function VideoSlideTrimmer({
         let newStart = leftPanResponder.startX + deltaSec;
         const minClipDuration = Math.min(1.5, dur);
         
-        newStart = Math.max(0, Math.min(newStart, endVal - minClipDuration));
+        newStart = Math.max(0, Math.min(newStart, endVal - minClipDuration, endVal - maxDuration));
         newStart = Math.round(newStart * 10) / 10;
 
         if (onTrimChange) {
@@ -143,7 +144,10 @@ export default function VideoSlideTrimmer({
         let newEnd = rightPanResponder.startEnd + deltaSec;
         const minClipDuration = Math.min(1.5, dur);
 
-        newEnd = Math.max(startVal + minClipDuration, Math.min(newEnd, dur));
+        newEnd = Math.max(
+          startVal + minClipDuration,
+          Math.min(newEnd, dur, startVal + maxDuration)
+        );
         newEnd = Math.round(newEnd * 10) / 10;
 
         if (onTrimChange) {
