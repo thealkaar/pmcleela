@@ -59,6 +59,15 @@ class Matchmaker {
     this.waitingQueue = this.waitingQueue.filter(item => item?.socket?.connected);
   }
 
+  getActiveUserIdentities() {
+    const active = new Set();
+    for (const socketId of this.userRooms.keys()) {
+      const socket = this.io.sockets.sockets.get(socketId);
+      if (socket?.connected) active.add(this.getUserIdentity(socket));
+    }
+    return active;
+  }
+
   removeFromQueue(socketId) {
     this.waitingQueue = this.waitingQueue.filter(item => item.socket.id !== socketId);
   }
@@ -125,10 +134,11 @@ class Matchmaker {
     const lastPartner = this.lastPartnerMap.get(socket.id);
 
     const candidateIdentities = new Set([userIdentity]);
+    const activeUserIdentities = this.getActiveUserIdentities();
     const validCandidates = this.waitingQueue.filter(item => {
       if (!item.socket?.connected) return false;
       const identity = this.getUserIdentity(item.socket);
-      if (candidateIdentities.has(identity)) return false;
+      if (candidateIdentities.has(identity) || activeUserIdentities.has(identity)) return false;
       candidateIdentities.add(identity);
       return true;
     });
@@ -217,6 +227,8 @@ class Matchmaker {
       !user1.socket.connected ||
       !user2.socket.connected ||
       this.getUserIdentity(user1.socket) === this.getUserIdentity(user2.socket) ||
+      this.getActiveUserIdentities().has(this.getUserIdentity(user1.socket)) ||
+      this.getActiveUserIdentities().has(this.getUserIdentity(user2.socket)) ||
       this.userRooms.has(user1.socket.id) ||
       this.userRooms.has(user2.socket.id)
     ) return;

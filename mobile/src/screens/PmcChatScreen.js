@@ -46,7 +46,7 @@ export default function PmcChatScreen({ serverHost, currentUser, onActiveChatCha
   const [messages, setMessages] = useState([]);
   const [inputText, setInputText] = useState('');
   const [partnerAlias, setPartnerAlias] = useState('');
-  const [partnerGender, setPartnerGender] = useState('female'); // 'female' | 'male'
+  const [partnerGender, setPartnerGender] = useState('male'); // 'female' | 'male'
   const [partnerAcademicYear, setPartnerAcademicYear] = useState('');
   const [myAlias, setMyAlias] = useState('');
   const [myAcademicYear, setMyAcademicYear] = useState('');
@@ -265,14 +265,22 @@ export default function PmcChatScreen({ serverHost, currentUser, onActiveChatCha
     });
 
     s.on('matched', (data) => {
+      if (!data?.partnerAlias || !data?.roomId) {
+        console.error('[PMC] Received an incomplete match payload:', data);
+        Alert.alert('Could not open chat', 'The match could not be loaded. Please try connecting again.');
+        setChatState('idle');
+        return;
+      }
       setMessages([]);
       setPartnerAlias(data.partnerAlias);
-      setPartnerGender(data.partnerGender || 'female');
+      setPartnerGender(data.partnerGender === 'female' ? 'female' : 'male');
       setPartnerAcademicYear(data.partnerAcademicYear || 'Student');
       setMyAlias(data.yourAlias);
       setMyAcademicYear(data.yourAcademicYear || currentUser?.academicYear || 'Student');
-      setChatState('chatting');
       setIsPartnerTyping(false);
+      flatListRef.current?.scrollToOffset({ offset: 0, animated: false });
+      setChatState('chatting');
+      console.log('[PMC] Chat opened with', data.partnerAlias);
     });
 
     s.on('receive_message', (msg) => {
@@ -547,7 +555,7 @@ export default function PmcChatScreen({ serverHost, currentUser, onActiveChatCha
   // ---------------- RENDER ACTIVE CHAT (WITH GENDER INDICATORS: GIRL=GREEN, BOY=RED) ----------------
   return (
     <KeyboardAvoidingView
-      style={[styles.chatCanvas, { opacity: screenTransition }]}
+      style={styles.chatCanvas}
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 20}
     >
@@ -560,14 +568,11 @@ export default function PmcChatScreen({ serverHost, currentUser, onActiveChatCha
               <Ionicons name="person" size={20} color="#cbd5e1" />
             </View>
 
-            {/* GENDER DOT INDICATOR:
-                - Female (Girl): Green glowing blinking dot
-                - Male (Boy): Red glowing blinking dot
-            */}
+            {/* Female is green; male is blue. */}
             {partnerGender === 'female' ? (
               <Animated.View style={[styles.greenBlinkingDot, { opacity: blinkAnim }]} />
             ) : (
-              <Animated.View style={[styles.redBlinkingDot, { opacity: blinkAnim }]} />
+              <Animated.View style={[styles.blueBlinkingDot, { opacity: blinkAnim }]} />
             )}
           </View>
 
@@ -576,9 +581,12 @@ export default function PmcChatScreen({ serverHost, currentUser, onActiveChatCha
               <Text style={styles.partnerAliasText} numberOfLines={1}>
                 {partnerAlias || 'Stranger'}
               </Text>
-              <Text style={styles.genderLabelMini}>
-                {partnerGender === 'female' ? ' (Girl)' : ' (Boy)'}
-              </Text>
+              <View style={styles.genderLabel}>
+                <View style={partnerGender === 'female' ? styles.genderDotFemale : styles.genderDotMale} />
+                <Text style={styles.genderLabelMini}>
+                  {partnerGender === 'female' ? 'G · Girl' : 'B · Boy'}
+                </Text>
+              </View>
             </View>
             <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 1 }}>
               <View style={styles.partnerYearPill}>
@@ -1024,18 +1032,18 @@ const styles = StyleSheet.create({
     shadowRadius: 6,
     elevation: 8
   },
-  // Boy Gender Indicator: Red Glowing Blinking Dot
-  redBlinkingDot: {
+  // Boy Gender Indicator: Blue Glowing Blinking Dot
+  blueBlinkingDot: {
     position: 'absolute',
     top: 0,
     right: 0,
     width: 12,
     height: 12,
     borderRadius: 6,
-    backgroundColor: '#ef4444',
+    backgroundColor: '#3b82f6',
     borderWidth: 2,
     borderColor: '#0c0e17',
-    shadowColor: '#ef4444',
+    shadowColor: '#3b82f6',
     shadowOffset: { width: 0, height: 0 },
     shadowOpacity: 0.9,
     shadowRadius: 6,
@@ -1050,6 +1058,23 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: '#94a3b8',
     marginLeft: 4
+  },
+  genderLabel: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginLeft: 5
+  },
+  genderDotFemale: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    backgroundColor: '#10b981'
+  },
+  genderDotMale: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    backgroundColor: '#3b82f6'
   },
   statusDotLine: {
     color: '#10b981',
