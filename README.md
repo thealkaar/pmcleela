@@ -61,3 +61,28 @@ npx expo start
 3. The app will load instantly on your phone with live reload!
 
 > **Tip for Wi-Fi connection:** In the app, switch to the **MANIT Pass** tab and verify your computer's local Wi-Fi IP (e.g. `10.68.7.167`) so your phone connects directly to the backend.
+
+## Deploy the Backend on Render Free
+
+The repository includes a Render Blueprint at [`render.yaml`](./render.yaml). In Render, create a **Blueprint** from the GitHub repository and select the free service. The Blueprint configures:
+
+* Root directory: `server`
+* Build command: `npm ci`
+* Start command: `npm start`
+* Health check path: `/api/health`
+* Upload limit: 90 MB
+
+If creating a Web Service manually instead, use the same root directory, commands, and health-check path. Set `BREVO_API_KEY` in the Render service's environment settings and set `FROM_EMAIL` to the sender address verified with Brevo. OTP registration will return an error in production until the email API key is configured.
+
+After the service deploys, copy its HTTPS URL (for example, `https://pmc-leela-api.onrender.com`). Set the Expo public variable `EXPO_PUBLIC_API_URL` to that URL in the environment used to build the release APK (or in your Expo/EAS build environment):
+
+```powershell
+$env:EXPO_PUBLIC_API_URL = "https://your-render-service.onrender.com"
+cd mobile
+```
+
+`EXPO_PUBLIC_API_URL` is embedded in the app at build time; it is not a secret. Rebuild the APK whenever the backend URL changes. The app uses that same URL for REST requests and Socket.IO.
+
+### Render Free limitations
+
+Render Free instances spin down while idle and may take about a minute to wake. Their filesystem is ephemeral, so this backend's current JSON user/reel data and locally uploaded videos can be lost when the service restarts, spins down, or deploys. Chat matchmaking and OTPs are also held in process memory. This deployment is suitable for a test/pilot only—not durable public use. Before inviting users to rely on it, move user/reel records to Supabase/Postgres, video objects to Backblaze B2, and shared OTP/chat state to durable/shared services. FFmpeg trimming also runs on the free web instance and can fail under its limited resources.

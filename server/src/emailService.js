@@ -14,12 +14,6 @@ async function sendOtpEmail(toEmail, otp, studentName = 'MANITian') {
   const fromEmail = process.env.FROM_EMAIL || 'pmcleelaofficial@gmail.com';
   const fromName = process.env.FROM_NAME || 'PMC Leela';
 
-  console.log(`\n===================================================`);
-  console.log(`📧 [BREVO EMAIL SERVICE] Sending OTP to: ${toEmail}`);
-  console.log(`🔑 [BREVO EMAIL SERVICE] Generated OTP Code: ${otp}`);
-  console.log(`🚀 [BREVO EMAIL SERVICE] Sender: ${fromName} <${fromEmail}>`);
-  console.log(`===================================================\n`);
-
   const htmlContent = `
     <!DOCTYPE html>
     <html>
@@ -84,7 +78,15 @@ async function sendOtpEmail(toEmail, otp, studentName = 'MANITian') {
   `;
 
   if (!brevoApiKey) {
-    console.log(`[BREVO] API key not found in process.env. (Dev OTP code: ${otp})`);
+    if (process.env.NODE_ENV === 'production') {
+      console.error('[BREVO] BREVO_API_KEY is required in production.');
+      return {
+        success: false,
+        error: 'Email verification is not configured. Please contact the app administrator.'
+      };
+    }
+
+    console.log(`[BREVO] API key is not configured. Development OTP for ${toEmail}: ${otp}`);
     return {
       success: true,
       simulated: true,
@@ -94,6 +96,7 @@ async function sendOtpEmail(toEmail, otp, studentName = 'MANITian') {
   }
 
   try {
+    console.log(`[BREVO] Sending verification email to ${toEmail} from ${fromName} <${fromEmail}>.`);
     const response = await fetch('https://api.brevo.com/v3/smtp/email', {
       method: 'POST',
       headers: {

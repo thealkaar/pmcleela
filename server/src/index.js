@@ -15,10 +15,13 @@ const { trimAndCropVideo } = require('./videoProcessor');
 const app = express();
 const server = http.createServer(app);
 
-// Enable CORS and generous JSON/multipart parsing for high-res phone reels
+app.set('trust proxy', 1);
+
+// Video files are handled as multipart uploads below, not buffered by JSON parsing.
 app.use(cors());
-app.use(express.json({ limit: '500mb' }));
-app.use(express.urlencoded({ extended: true, limit: '500mb' }));
+const jsonBodyLimit = process.env.JSON_BODY_LIMIT || '500mb';
+app.use(express.json({ limit: jsonBodyLimit }));
+app.use(express.urlencoded({ extended: true, limit: jsonBodyLimit }));
 
 // Local Video & Media Uploads Directory (stored right on the PC)
 const uploadsDir = path.join(__dirname, '../uploads');
@@ -39,7 +42,13 @@ app.get('/test', (req, res) => {
   res.sendFile(path.join(publicDir, 'test.html'));
 });
 
-// Multer storage for local reels videos (1GB limit for 4K / full-length campus videos)
+const configuredUploadLimitMb = Number(process.env.MAX_UPLOAD_MB || 2048);
+if (!Number.isFinite(configuredUploadLimitMb) || configuredUploadLimitMb <= 0) {
+  throw new Error('MAX_UPLOAD_MB must be a positive number.');
+}
+const maxUploadBytes = configuredUploadLimitMb * 1024 * 1024;
+
+// Multer storage for local reels videos.
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, uploadsDir),
   filename: (req, file, cb) => {
@@ -50,7 +59,7 @@ const storage = multer.diskStorage({
 const upload = multer({
   storage,
   limits: {
-    fileSize: 2 * 1024 * 1024 * 1024, // 2GB video max
+    fileSize: maxUploadBytes,
     fieldSize: 100 * 1024 * 1024      // 100MB field text max
   }
 });
@@ -376,7 +385,7 @@ app.post('/api/reels/upload', (req, res) => {
       if (err.code === 'LIMIT_FILE_SIZE') {
         return res.status(413).json({
           success: false,
-          message: 'Video file exceeds the 2GB limit. Please trim or select a shorter clip.'
+          message: `Video file exceeds the ${configuredUploadLimitMb}MB limit. Please trim or select a shorter clip.`
         });
       }
       return res.status(400).json({ success: false, message: `Upload error: ${err.message}` });
@@ -504,7 +513,7 @@ const PORT = process.env.PORT || 5000;
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`===================================================`);
   console.log(`🚀 पी एम सी Leela Server Active on port ${PORT}`);
-  console.log(`💾 Local Database & Uploads Ready in server/data and server/uploads`);
+  console.log(`💾 Local JSON database and uploads are available in server/data and server/uploads`);
   console.log(`🛡️ MANIT Email OTP Verification: Active (domain: @stu.manit.ac.in)`);
   console.log(`❤️ Piya Milan Chauraha: Socket.io Matchmaker Active`);
   console.log(`🎬 Leela Reels: Local Storage & Streaming API Active`);
