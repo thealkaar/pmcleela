@@ -2,6 +2,7 @@ const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const ffmpegPath = require('ffmpeg-static');
+const MAX_REEL_DURATION_SECONDS = 20;
 
 const CROP_FILTERS = {
   '9:16': 'scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280',
@@ -44,6 +45,11 @@ async function trimAndCropVideo(inputPath, { trimStart, trimEnd, cropMode = '9:1
   const end = Number(trimEnd);
   if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start) {
     const error = new Error('The selected video trim range is invalid.');
+    error.statusCode = 400;
+    throw error;
+  }
+  if (end - start > MAX_REEL_DURATION_SECONDS) {
+    const error = new Error(`A reel can be no longer than ${MAX_REEL_DURATION_SECONDS} seconds.`);
     error.statusCode = 400;
     throw error;
   }

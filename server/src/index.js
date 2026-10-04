@@ -8,18 +8,31 @@ const multer = require('multer');
 const { Server } = require('socket.io');
 
 const Matchmaker = require('./matchmaker');
-const db = require('./db');
+const { LocalDB } = require('./db');
+const PostgresDB = require('./postgresDb');
 const { sendOtpEmail } = require('./emailService');
 const { trimAndCropVideo } = require('./videoProcessor');
+const b2Storage = require('./b2Storage');
 
+if (process.env.NODE_ENV === 'production' && !process.env.DATABASE_URL) {
+  throw new Error('DATABASE_URL is required in production. Configure the Supabase PostgreSQL connection string.');
+}
+
+const db = process.env.DATABASE_URL ? new PostgresDB(LocalDB) : new LocalDB();
 const app = express();
 const server = http.createServer(app);
+
+function publicUser(user) {
+  if (!user) return user;
+  const { password, passwordHash, ...safeUser } = user;
+  return safeUser;
+}
 
 app.set('trust proxy', 1);
 
 // Video files are handled as multipart uploads below, not buffered by JSON parsing.
 app.use(cors());
-const jsonBodyLimit = process.env.JSON_BODY_LIMIT || '500mb';
+const jsonBodyLimit = process.env.JSON_BODY_LIMIT || '10mb';
 app.use(express.json({ limit: jsonBodyLimit }));
 app.use(express.urlencoded({ extended: true, limit: jsonBodyLimit }));
 
@@ -42,7 +55,7 @@ app.get('/test', (req, res) => {
   res.sendFile(path.join(publicDir, 'test.html'));
 });
 
-const configuredUploadLimitMb = Number(process.env.MAX_UPLOAD_MB || 2048);
+const configuredUploadLimitMb = Number(process.env.MAX_UPLOAD_MB || 100);
 if (!Number.isFinite(configuredUploadLimitMb) || configuredUploadLimitMb <= 0) {
   throw new Error('MAX_UPLOAD_MB must be a positive number.');
 }
@@ -60,7 +73,7 @@ const upload = multer({
   storage,
   limits: {
     fileSize: maxUploadBytes,
-    fieldSize: 100 * 1024 * 1024      // 100MB field text max
+    fieldSize: 1024 * 1024
   }
 });
 
@@ -128,14 +141,20 @@ io.on('connection', (socket) => {
 // ================= REST API ROUTES =================
 
 // Health check
-app.get('/api/health', (req, res) => {
-  res.json({
-    status: 'ok',
-    appName: 'पी एम सी Leela',
-    college: 'MANIT Bhopal',
-    serverTime: new Date().toISOString(),
-    stats: matchmaker.getOnlineStats()
-  });
+app.get('/api/health', async (req, res) => {
+  try {
+    await db.checkConnection();
+    res.json({
+      status: 'ok',
+      appName: 'पी एम सी Leela',
+      college: 'MANIT Bhopal',
+      serverTime: new Date().toISOString(),
+      stats: matchmaker.getOnlineStats()
+    });
+  } catch (error) {
+    console.error('[Health] Database connection failed:', error.message);
+    res.status(503).json({ status: 'error', message: 'Database unavailable.' });
+  }
 });
 
 // 1. STEP 1: SEND EMAIL OTP FOR VERIFICATION
@@ -153,7 +172,7 @@ app.post('/api/auth/send-otp', async (req, res) => {
     }
 
     // Check if email already registered
-    const existing = db.findUserByEmail(validation.email);
+    const existing = await db.findUserByEmail(validation.email);
     if (existing) {
       return res.status(400).json({
         success: false,
@@ -194,7 +213,7 @@ app.post('/api/auth/send-otp', async (req, res) => {
 });
 
 // 2. STEP 2: VERIFY OTP AND REGISTER ACCOUNT
-app.post('/api/auth/verify-and-register', (req, res) => {
+app.post('/api/auth/verify-and-register', async (req, res) => {
   try {
     const { email, otp, fullName, phone, password, gender, academicYear, hostel, anonymousName, avatarUrl } = req.body;
     
@@ -222,7 +241,7 @@ app.post('/api/auth/verify-and-register', (req, res) => {
     }
 
     // Register user
-    const newUser = db.registerVerifiedUser({
+    const newUser = await db.registerVerifiedUser({
       fullName: fullName || otpResult.studentData?.fullName || 'MANIT Student',
       phone: phone || otpResult.studentData?.phone || '',
       email,
@@ -237,7 +256,7 @@ app.post('/api/auth/verify-and-register', (req, res) => {
     res.status(201).json({
       success: true,
       message: 'Email verified! Account created successfully. Welcome to पी एम सी Leela.',
-      user: newUser,
+      user: publicUser(newUser),
       token: `tok_${Date.now()}_${newUser.id}`
     });
   } catch (err) {
@@ -247,7 +266,7 @@ app.post('/api/auth/verify-and-register', (req, res) => {
 });
 
 // 3. LEGACY / DIRECT REGISTER (Fallback with automatic validation)
-app.post('/api/auth/register', (req, res) => {
+app.post('/api/auth/register', async (req, res) => {
   try {
     const { email, password, fullName, phone, gender, academicYear, hostel, anonymousName, avatarUrl } = req.body;
     if (!email || !password || !gender || !anonymousName) {
@@ -257,7 +276,7 @@ app.post('/api/auth/register', (req, res) => {
       });
     }
 
-    const newUser = db.registerUser({
+    const newUser = await db.registerUser({
       email,
       password,
       fullName,
@@ -272,7 +291,7 @@ app.post('/api/auth/register', (req, res) => {
     res.status(201).json({
       success: true,
       message: 'Account created successfully! Welcome to पी एम सी Leela.',
-      user: newUser,
+      user: publicUser(newUser),
       token: `tok_${Date.now()}_${newUser.id}`
     });
   } catch (err) {
@@ -281,7 +300,7 @@ app.post('/api/auth/register', (req, res) => {
 });
 
 // 4. LOGIN STUDENT ACCOUNT (Using Email OR Scholar No OR Anonymous Name + Password)
-app.post('/api/auth/login', (req, res) => {
+app.post('/api/auth/login', async (req, res) => {
   try {
     const { identifier, password } = req.body;
     if (!identifier || !password) {
@@ -291,11 +310,11 @@ app.post('/api/auth/login', (req, res) => {
       });
     }
 
-    const user = db.loginUser(identifier, password);
+    const user = await db.loginUser(identifier, password);
     res.json({
       success: true,
       message: 'Logged in successfully!',
-      user,
+      user: publicUser(user),
       token: `tok_${Date.now()}_${user.id}`
     });
   } catch (err) {
@@ -304,13 +323,13 @@ app.post('/api/auth/login', (req, res) => {
 });
 
 // 5. UPDATE ANONYMOUS PERSONA
-app.post('/api/auth/update-persona', (req, res) => {
+app.post('/api/auth/update-persona', async (req, res) => {
   try {
     const { userId, newAnonymousName } = req.body;
     if (!userId || !newAnonymousName) {
       return res.status(400).json({ success: false, message: 'User ID and new anonymous name required.' });
     }
-    const updatedUser = db.updateUserPersona(userId, newAnonymousName);
+    const updatedUser = await db.updateUserPersona(userId, newAnonymousName);
     if (!updatedUser) {
       return res.status(404).json({ success: false, message: 'User not found.' });
     }
@@ -321,14 +340,14 @@ app.post('/api/auth/update-persona', (req, res) => {
 });
 
 // 6. DELETE USER ACCOUNT & ALL ASSOCIATED DATA
-app.delete('/api/auth/delete-account', (req, res) => {
+app.delete('/api/auth/delete-account', async (req, res) => {
   try {
     const { userId } = req.body;
     if (!userId) {
       return res.status(400).json({ success: false, message: 'User ID is required.' });
     }
 
-    const result = db.deleteUser(userId);
+    const result = await db.deleteUser(userId);
     if (!result) {
       return res.status(404).json({ success: false, message: 'User not found.' });
     }
@@ -346,12 +365,24 @@ app.delete('/api/auth/delete-account', (req, res) => {
       }
     }
 
-    console.log(`[Account] Deleted user ${result.deletedUser.anonymousName} (${result.deletedUser.email}), removed ${result.deletedReelFiles.length} reel files`);
+    const failedB2Deletions = [];
+    for (const key of result.deletedReelStorageKeys) {
+      try {
+        await b2Storage.deleteVideo(key);
+      } catch (storageErr) {
+        failedB2Deletions.push(key);
+        console.error(`[Cleanup] Failed to delete B2 reel object ${key}:`, storageErr.message);
+      }
+    }
 
-    res.json({
-      success: true,
-      message: 'Your account and all associated data have been permanently deleted.',
-      deletedReels: result.deletedReelFiles.length
+    console.log(`[Account] Deleted user ${result.deletedUser.anonymousName} (${result.deletedUser.email}), removed ${result.deletedReelFiles.length} local reel files and ${result.deletedReelStorageKeys.length - failedB2Deletions.length} B2 reel objects`);
+
+    res.status(failedB2Deletions.length ? 502 : 200).json({
+      success: failedB2Deletions.length === 0,
+      message: failedB2Deletions.length
+        ? 'Your account was deleted, but some reel videos could not be removed from storage.'
+        : 'Your account and all associated data have been permanently deleted.',
+      deletedReels: result.deletedReelFiles.length + result.deletedReelStorageKeys.length - failedB2Deletions.length
     });
   } catch (err) {
     console.error('Delete account error:', err);
@@ -360,26 +391,38 @@ app.delete('/api/auth/delete-account', (req, res) => {
 });
 
 // 7. GET LEELA REELS FEED
-app.get('/api/reels', (req, res) => {
-  const host = req.get('host');
-  const protocol = req.protocol;
-  const rawReels = db.getReels();
-  const reels = rawReels.map(r => {
-    let url = r.videoUrl;
-    if (url && url.includes('/uploads/')) {
-      const filename = url.split('/uploads/').pop();
-      url = `${protocol}://${host}/uploads/${filename}`;
-    }
-    return {
-      ...r,
-      videoUrl: url
-    };
-  });
-  res.json({ success: true, count: reels.length, data: reels });
+app.get('/api/reels', async (req, res) => {
+  try {
+    const host = req.get('host');
+    const protocol = req.protocol;
+    const rawReels = await db.getReels();
+    const reels = await Promise.all(rawReels.map(async (r) => {
+      if (r.videoStorageKey) {
+        return { ...r, videoUrl: await b2Storage.getVideoUrl(r.videoStorageKey) };
+      }
+      let url = r.videoUrl;
+      if (url && url.includes('/uploads/')) {
+        const filename = url.split('/uploads/').pop();
+        url = `${protocol}://${host}/uploads/${filename}`;
+      }
+      return { ...r, videoUrl: url };
+    }));
+    res.json({ success: true, count: reels.length, data: reels });
+  } catch (err) {
+    console.error('Reel feed error:', err);
+    res.status(500).json({ success: false, message: 'Could not load reels.' });
+  }
 });
 
-// 8. UPLOAD REEL TO PC LOCAL STORAGE
+// 8. UPLOAD REEL TO CONFIGURED STORAGE
 app.post('/api/reels/upload', (req, res) => {
+  if (process.env.NODE_ENV === 'production' && !b2Storage.isConfigured()) {
+    return res.status(503).json({
+      success: false,
+      message: 'Reel storage is not configured. Please contact the app administrator.'
+    });
+  }
+
   upload.single('video')(req, res, async (err) => {
     if (err instanceof multer.MulterError) {
       if (err.code === 'LIMIT_FILE_SIZE') {
@@ -394,22 +437,16 @@ app.post('/api/reels/upload', (req, res) => {
     }
 
     let uploadedPath = req.file?.path;
+    let uploadedStorageKey = null;
+    let uploadContentType = req.file?.mimetype || 'video/mp4';
     try {
       const { creatorName, creatorYear, caption, audioTitle, tags, creatorId, trimStart, trimEnd, cropMode } = req.body;
       let videoUrl = req.body.videoUrl;
 
-      if (!uploadedPath && req.body && req.body.videoBase64) {
-        const base64Data = req.body.videoBase64;
-        const matches = base64Data.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
-        let buffer;
-        if (matches && matches.length === 3) {
-          buffer = Buffer.from(matches[2], 'base64');
-        } else {
-          buffer = Buffer.from(base64Data, 'base64');
-        }
-        const filename = `leela_${Date.now()}_${Math.random().toString(36).substring(7)}.mp4`;
-        uploadedPath = path.join(uploadsDir, filename);
-        fs.writeFileSync(uploadedPath, buffer);
+      if (!uploadedPath) {
+        const error = new Error('A video file is required.');
+        error.statusCode = 400;
+        throw error;
       }
 
       const hasTrimStart = trimStart !== undefined && trimStart !== '';
@@ -419,8 +456,8 @@ app.post('/api/reels/upload', (req, res) => {
         error.statusCode = 400;
         throw error;
       }
-      if (hasTrimStart && !uploadedPath) {
-        const error = new Error('A video file is required to process the selected trim range.');
+      if (!hasTrimStart) {
+        const error = new Error('Select a trim range of up to 20 seconds before uploading.');
         error.statusCode = 400;
         throw error;
       }
@@ -431,6 +468,7 @@ app.post('/api/reels/upload', (req, res) => {
           trimEnd,
           cropMode: cropMode || '9:16'
         });
+        uploadContentType = 'video/mp4';
         await fs.promises.unlink(uploadedPath).catch((cleanupError) => {
           if (cleanupError.code !== 'ENOENT') {
             console.error('Could not remove original reel upload:', cleanupError);
@@ -440,21 +478,31 @@ app.post('/api/reels/upload', (req, res) => {
       }
 
       if (uploadedPath) {
-        const host = req.get('host');
-        const protocol = req.protocol;
-        videoUrl = `${protocol}://${host}/uploads/${path.basename(uploadedPath)}`;
+        if (b2Storage.isConfigured()) {
+          uploadedStorageKey = await b2Storage.uploadVideo(uploadedPath, uploadContentType);
+          await fs.promises.unlink(uploadedPath);
+          uploadedPath = null;
+        } else {
+          const host = req.get('host');
+          const protocol = req.protocol;
+          videoUrl = `${protocol}://${host}/uploads/${path.basename(uploadedPath)}`;
+        }
       }
 
-      if (!videoUrl) {
+      if (!videoUrl && !uploadedStorageKey) {
         return res.status(400).json({ success: false, message: 'Video file is required.' });
       }
 
-      const newReel = db.addReel({
+      const signedVideoUrl = uploadedStorageKey
+        ? await b2Storage.getVideoUrl(uploadedStorageKey)
+        : null;
+      const newReel = await db.addReel({
         creatorId,
         creatorName: creatorName || 'Campus Creator',
         creatorYear: creatorYear || 'Student',
         caption: caption || 'Campus vibes on Leela',
         videoUrl,
+        videoStorageKey: uploadedStorageKey,
         audioTitle: audioTitle || 'Original Audio',
         tags: typeof tags === 'string' ? tags.split(',').map(t => t.trim()) : (tags || ['#PMC', '#MANIT', '#Leela']),
         trimStart: trimStart || 0,
@@ -462,10 +510,18 @@ app.post('/api/reels/upload', (req, res) => {
         cropMode: cropMode || '9:16'
       });
 
-      console.log(`[Leela] New reel permanently stored on PC: ${newReel.id} by ${creatorName} (${creatorYear}), URL: ${videoUrl}`);
-      res.status(201).json({ success: true, data: newReel });
+      console.log(`[Leela] New reel stored: ${newReel.id} by ${creatorName} (${creatorYear})`);
+      res.status(201).json({
+        success: true,
+        data: signedVideoUrl ? { ...newReel, videoUrl: signedVideoUrl } : newReel
+      });
     } catch (saveErr) {
       console.error('Reel upload error:', saveErr);
+      if (uploadedStorageKey) {
+        await b2Storage.deleteVideo(uploadedStorageKey).catch((cleanupError) => {
+          console.error('Could not remove failed B2 reel upload:', cleanupError);
+        });
+      }
       if (uploadedPath) {
         await fs.promises.unlink(uploadedPath).catch((cleanupError) => {
           if (cleanupError.code !== 'ENOENT') {
@@ -479,25 +535,35 @@ app.post('/api/reels/upload', (req, res) => {
 });
 
 // 8. TOGGLE LIKE ON REEL
-app.post('/api/reels/:id/like', (req, res) => {
-  const updatedReel = db.toggleLike(req.params.id);
-  if (!updatedReel) {
-    return res.status(404).json({ success: false, message: 'Reel not found.' });
+app.post('/api/reels/:id/like', async (req, res) => {
+  try {
+    const updatedReel = await db.toggleLike(req.params.id);
+    if (!updatedReel) {
+      return res.status(404).json({ success: false, message: 'Reel not found.' });
+    }
+    res.json({ success: true, data: updatedReel });
+  } catch (error) {
+    console.error('Reel like error:', error);
+    res.status(500).json({ success: false, message: 'Could not update reel like.' });
   }
-  res.json({ success: true, data: updatedReel });
 });
 
 // 9. POST COMMENT ON REEL
-app.post('/api/reels/:id/comments', (req, res) => {
-  const { user, text, userYear } = req.body;
-  if (!text) {
-    return res.status(400).json({ success: false, message: 'Comment text is required.' });
+app.post('/api/reels/:id/comments', async (req, res) => {
+  try {
+    const { user, text, userYear } = req.body;
+    if (!text) {
+      return res.status(400).json({ success: false, message: 'Comment text is required.' });
+    }
+    const comment = await db.addComment(req.params.id, user, text, userYear);
+    if (!comment) {
+      return res.status(404).json({ success: false, message: 'Reel not found.' });
+    }
+    res.json({ success: true, data: comment });
+  } catch (error) {
+    console.error('Reel comment error:', error);
+    res.status(500).json({ success: false, message: 'Could not save reel comment.' });
   }
-  const comment = db.addComment(req.params.id, user, text, userYear);
-  if (!comment) {
-    return res.status(404).json({ success: false, message: 'Reel not found.' });
-  }
-  res.json({ success: true, data: comment });
 });
 
 // Global Error Handler
@@ -510,12 +576,18 @@ app.use((err, req, res, next) => {
 });
 
 const PORT = process.env.PORT || 5000;
-server.listen(PORT, '0.0.0.0', () => {
+db.initialize().then(() => server.listen(PORT, '0.0.0.0', () => {
   console.log(`===================================================`);
   console.log(`🚀 पी एम सी Leela Server Active on port ${PORT}`);
-  console.log(`💾 Local JSON database and uploads are available in server/data and server/uploads`);
+  console.log(`💾 Metadata database: ${process.env.DATABASE_URL ? 'Supabase PostgreSQL' : 'local JSON'}`);
   console.log(`🛡️ MANIT Email OTP Verification: Active (domain: @stu.manit.ac.in)`);
   console.log(`❤️ Piya Milan Chauraha: Socket.io Matchmaker Active`);
-  console.log(`🎬 Leela Reels: Local Storage & Streaming API Active`);
+  console.log(`🎬 Leela Reels: Video storage ${b2Storage.isConfigured() ? 'Backblaze B2' : 'local disk'}`);
   console.log(`===================================================`);
+})).catch((error) => {
+  console.error('[Startup] Database initialization failed:', error);
+  db.close().catch((closeError) => {
+    console.error('[Startup] Failed to close database pool:', closeError.message);
+  });
+  process.exitCode = 1;
 });

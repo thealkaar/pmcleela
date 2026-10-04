@@ -3,10 +3,6 @@ const path = require('path');
 const { v4: uuidv4 } = require('uuid');
 
 const DATA_DIR = path.join(__dirname, '../data');
-if (!fs.existsSync(DATA_DIR)) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-}
-
 const USERS_FILE = path.join(DATA_DIR, 'users.json');
 const REELS_FILE = path.join(DATA_DIR, 'reels.json');
 
@@ -31,9 +27,12 @@ function writeJson(file, data) {
 }
 
 class LocalDB {
-  constructor() {
-    this.users = readJson(USERS_FILE, []);
-    this.reels = readJson(REELS_FILE, []);
+  constructor({ useLocalFiles = true } = {}) {
+    if (useLocalFiles && !fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+    this.users = useLocalFiles ? readJson(USERS_FILE, []) : [];
+    this.reels = useLocalFiles ? readJson(REELS_FILE, []) : [];
     // In-memory OTP storage: email -> { otp, studentData, expiresAt }
     this.otpStore = new Map();
   }
@@ -80,6 +79,14 @@ class LocalDB {
     if (diff >= 3) return '4th';
     return '1st';
   }
+
+  async initialize() {}
+
+  async checkConnection() {
+    return true;
+  }
+
+  async close() {}
 
   // --- USER AUTH METHODS ---
   refreshUsers() {
@@ -232,8 +239,7 @@ class LocalDB {
 
   /**
    * Delete a user account and all their associated reels.
-   * Returns { deletedUser, deletedReelFiles } where deletedReelFiles
-   * is an array of video filenames that should be removed from disk.
+   * Returns the deleted user and associated local files/storage keys for cleanup.
    */
   deleteUser(userId) {
     this.refreshUsers();
@@ -248,9 +254,13 @@ class LocalDB {
 
     // Find and remove all reels created by this user
     const deletedReelFiles = [];
+    const deletedReelStorageKeys = [];
     const remainingReels = [];
     for (const reel of this.reels) {
       if (reel.creatorId === userId) {
+        if (reel.videoStorageKey) {
+          deletedReelStorageKeys.push(reel.videoStorageKey);
+        }
         // Extract local filename from videoUrl if it's a local upload
         if (reel.videoUrl && reel.videoUrl.includes('/uploads/')) {
           const filename = reel.videoUrl.split('/uploads/').pop();
@@ -263,7 +273,7 @@ class LocalDB {
     this.reels = remainingReels;
     writeJson(REELS_FILE, this.reels);
 
-    return { deletedUser, deletedReelFiles };
+    return { deletedUser, deletedReelFiles, deletedReelStorageKeys };
   }
 
   // --- REELS METHODS ---
@@ -307,7 +317,7 @@ class LocalDB {
     ];
   }
 
-  addReel({ creatorId, creatorName, creatorYear, caption, videoUrl, audioTitle, tags, trimStart, trimEnd, cropMode }) {
+  addReel({ creatorId, creatorName, creatorYear, caption, videoUrl, videoStorageKey, audioTitle, tags, trimStart, trimEnd, cropMode }) {
     const newReel = {
       id: `reel_${Date.now()}_${uuidv4().slice(0, 6)}`,
       creatorId,
@@ -315,6 +325,7 @@ class LocalDB {
       creatorYear: creatorYear || 'Student',
       caption: caption || 'Campus moment on Leela',
       videoUrl,
+      videoStorageKey: videoStorageKey || null,
       trimStart: Number(trimStart) || 0,
       trimEnd: Number(trimEnd) || 0,
       cropMode: cropMode || '9:16',
@@ -358,4 +369,4 @@ class LocalDB {
   }
 }
 
-module.exports = new LocalDB();
+module.exports = { LocalDB };

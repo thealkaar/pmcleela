@@ -34,6 +34,8 @@ const formatYearShort = (val) => {
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const REEL_HEIGHT = SCREEN_HEIGHT - 65;
+const MAX_REEL_DURATION_SECONDS = 20;
+const MAX_VIDEO_FILE_BYTES = 100 * 1024 * 1024;
 
 // Fullscreen WhatsApp-Style Slide & Trim Story Editor Component
 function VideoStoryEditor({
@@ -67,7 +69,7 @@ function VideoStoryEditor({
       if (durationInitialized.current || !Number.isFinite(duration) || duration <= 0) return;
       durationInitialized.current = true;
       setTotalDuration(duration);
-      setTrimEnd(Math.min(15, duration));
+      setTrimEnd(Math.min(MAX_REEL_DURATION_SECONDS, duration));
       setVideoLoadError(null);
       if (!uploading) player.play();
     };
@@ -627,10 +629,14 @@ export default function LeelaReelsScreen({ serverHost, currentUser, isTabActive 
       const res = await ImagePicker.launchCameraAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Videos,
         quality: 0.8,
-        videoMaxDuration: 60
+        videoMaxDuration: MAX_REEL_DURATION_SECONDS
       });
 
       if (!res.canceled && res.assets && res.assets[0]) {
+        if (res.assets[0].fileSize > MAX_VIDEO_FILE_BYTES) {
+          Alert.alert('Video too large', 'Choose a video file that is 100 MB or smaller.');
+          return;
+        }
         setSelectedVideoUri(res.assets[0].uri);
         setPickerModalVisible(false);
         setStoryEditorVisible(true);
@@ -655,6 +661,10 @@ export default function LeelaReelsScreen({ serverHost, currentUser, isTabActive 
       });
 
       if (!res.canceled && res.assets && res.assets[0]) {
+        if (res.assets[0].fileSize > MAX_VIDEO_FILE_BYTES) {
+          Alert.alert('Video too large', 'Choose a video file that is 100 MB or smaller.');
+          return;
+        }
         setSelectedVideoUri(res.assets[0].uri);
         setPickerModalVisible(false);
         setStoryEditorVisible(true);
@@ -667,6 +677,12 @@ export default function LeelaReelsScreen({ serverHost, currentUser, isTabActive 
   const handlePublishReel = async ({ trimStart, trimEnd, caption, audioTitle, cropMode }) => {
     if (!selectedVideoUri) {
       Alert.alert('No Video', 'Please select a video file first.');
+      return;
+    }
+    if (!Number.isFinite(trimStart) || !Number.isFinite(trimEnd) ||
+        trimStart < 0 || trimEnd <= trimStart ||
+        trimEnd - trimStart > MAX_REEL_DURATION_SECONDS) {
+      Alert.alert('Invalid video length', 'Please select a video segment that is 20 seconds or shorter.');
       return;
     }
 

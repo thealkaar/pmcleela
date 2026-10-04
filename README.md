@@ -70,9 +70,19 @@ The repository includes a Render Blueprint at [`render.yaml`](./render.yaml). In
 * Build command: `npm ci`
 * Start command: `npm start`
 * Health check path: `/api/health`
-* Upload limit: 90 MB
+* Upload limit: 100 MB; published reel length is limited to 20 seconds.
+* Private Backblaze B2 bucket `pmcleela` in region `us-east-005`; video playback uses expiring signed URLs.
 
-If creating a Web Service manually instead, use the same root directory, commands, and health-check path. Set `BREVO_API_KEY` in the Render service's environment settings and set `FROM_EMAIL` to the sender address verified with Brevo. OTP registration will return an error in production until the email API key is configured.
+If creating a Web Service manually instead, use the same root directory, commands, and health-check path. Add the following secret environment variables in Render (never commit them or add them to the APK):
+
+* `B2_KEY_ID`: the key ID from a Backblaze application key restricted to this bucket with read, write, and delete access.
+* `B2_APPLICATION_KEY`: the secret application key value; do not use a master key.
+* `DATABASE_URL`: the Supabase PostgreSQL **Session pooler** URI. In Supabase, open **Connect → Direct connection → Session pooler → URI**, replace its password placeholder with the newly reset database password, and add the complete URI to Render. Keep this value server-side as a Render secret.
+* `BREVO_API_KEY`: required for student OTP email. Also set `FROM_EMAIL` to the sender address verified with Brevo. OTP registration returns an error until the email API key is configured.
+
+The `B2_BUCKET_NAME`, `B2_ENDPOINT`, and `B2_REGION` values are already set by the Blueprint. On startup, the backend creates the `pmc_users` and `pmc_reels` tables in Supabase if they do not exist. New user and reel metadata, likes, comments, and account/reel deletions are stored in Supabase; new account passwords are hashed before storage. The old local JSON files are not automatically imported—existing local accounts/reels need a separate migration if you want to keep them. Chat matchmaking and OTPs remain in process memory.
+
+The 100 MB limit applies to the selected source file uploaded to the server. The editor and server both restrict the published, trimmed segment to at most 20 seconds. The gallery picker may select a longer source, but only a maximum 20-second segment can be published; camera recording is limited to 20 seconds.
 
 After the service deploys, copy its HTTPS URL (for example, `https://pmc-leela-api.onrender.com`). Set the Expo public variable `EXPO_PUBLIC_API_URL` to that URL in the environment used to build the release APK (or in your Expo/EAS build environment):
 
@@ -85,4 +95,4 @@ cd mobile
 
 ### Render Free limitations
 
-Render Free instances spin down while idle and may take about a minute to wake. Their filesystem is ephemeral, so this backend's current JSON user/reel data and locally uploaded videos can be lost when the service restarts, spins down, or deploys. Chat matchmaking and OTPs are also held in process memory. This deployment is suitable for a test/pilot only—not durable public use. Before inviting users to rely on it, move user/reel records to Supabase/Postgres, video objects to Backblaze B2, and shared OTP/chat state to durable/shared services. FFmpeg trimming also runs on the free web instance and can fail under its limited resources.
+Render Free instances spin down while idle and may take about a minute to wake. Video objects persist in Backblaze B2, but this backend's current JSON user/reel metadata is on Render's ephemeral filesystem, while chat matchmaking and OTPs are held in process memory. This deployment is suitable for a test/pilot only—not durable public use. Before inviting users to rely on it, move user/reel records to Supabase/Postgres and shared OTP/chat state to durable/shared services. FFmpeg trimming still runs on the free web instance and can fail under its limited resources.
