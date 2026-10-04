@@ -34,116 +34,178 @@ class Matchmaker {
     this.io = io;
     this.waitingQueue = []; // array of { socket, gender, alias, enteredAt, lastPartnerId }
     this.userRooms = new Map(); // socket.id -> { roomId, partnerId, yourAlias, partnerAlias, partnerGender }
-    this.pendingMatches = new Map(); // socket.id -> Timeout
+    this.pendingMatches = new Map(); // socket.id -> pending match reservation
     this.lastPartnerMap = new Map(); // socket.id -> lastPartnerSocketId
-    this.activeMatchesCount = 0;
   }
 
   getOnlineStats() {
     this.cleanDeadSockets();
+    const onlineUsers = new Set();
+    for (const socket of this.io.sockets.sockets.values()) {
+      onlineUsers.add(this.getUserIdentity(socket));
+    }
     return {
       waiting: this.waitingQueue.length,
-      activeChats: this.activeMatchesCount,
-      totalConnected: this.io.engine.clientsCount
+      activeChats: this.userRooms.size / 2,
+      totalConnected: onlineUsers.size
     };
   }
 
+  getUserIdentity(socket) {
+    return socket.data?.userId || socket.id;
+  }
+
   cleanDeadSockets() {
-    this.waitingQueue = this.waitingQueue.filter(item => item && item.socket && item.socket.connected);
+    this.waitingQueue = this.waitingQueue.filter(item => item?.socket?.connected);
+  }
+
+  removeFromQueue(socketId) {
+    this.waitingQueue = this.waitingQueue.filter(item => item.socket.id !== socketId);
+  }
+
+  cancelPendingMatch(socket, requeuePartner = true) {
+    const reservation = this.pendingMatches.get(socket.id);
+    if (!reservation) return;
+
+    clearTimeout(reservation.timer);
+    if (this.pendingMatches.get(reservation.socket.id) === reservation) {
+      this.pendingMatches.delete(reservation.socket.id);
+    }
+    if (this.pendingMatches.get(reservation.partnerSocket.id) === reservation) {
+      this.pendingMatches.delete(reservation.partnerSocket.id);
+    }
+
+    const partner = reservation.socket.id === socket.id
+      ? reservation.partnerSocket
+      : reservation.socket;
+    const partnerInfo = reservation.socket.id === socket.id
+      ? reservation.partnerInfo
+      : reservation.userInfo;
+    if (
+      !requeuePartner ||
+      !partner.connected ||
+      this.userRooms.has(partner.id) ||
+      this.pendingMatches.has(partner.id) ||
+      this.waitingQueue.some(item => item.socket.id === partner.id)
+    ) {
+      return;
+    }
+
+    this.waitingQueue.push({ socket: partner, ...partnerInfo, enteredAt: Date.now() });
+    partner.emit('waiting', {
+      message: 'Waiting at PMC...',
+      queueSize: this.waitingQueue.length
+    });
   }
 
   enqueue(socket, userInfo = {}) {
-    // If already in a room, leave first
     this.leaveRoom(socket);
     this.cleanDeadSockets();
 
-    // Cancel any previous pending match timer
-    if (this.pendingMatches.has(socket.id)) {
-      clearTimeout(this.pendingMatches.get(socket.id));
-      this.pendingMatches.delete(socket.id);
+    const userIdentity = this.getUserIdentity(socket);
+    const reservations = new Set(this.pendingMatches.values());
+    for (const reservation of reservations) {
+      if (
+        this.getUserIdentity(reservation.socket) === userIdentity ||
+        this.getUserIdentity(reservation.partnerSocket) === userIdentity
+      ) {
+        this.cancelPendingMatch(reservation.socket);
+      }
     }
+    this.waitingQueue = this.waitingQueue.filter(
+      item => this.getUserIdentity(item.socket) !== userIdentity
+    );
+    this.removeFromQueue(socket.id);
 
-    const userGender = userInfo.gender || (Math.random() > 0.5 ? 'female' : 'male');
-    const userAlias = userInfo.preferredAlias || getRandomAlias();
-    const userYear = userInfo.academicYear || 'Student';
+    const normalizedInfo = {
+      gender: userInfo.gender === 'female' ? 'female' : 'male',
+      alias: userInfo.preferredAlias || getRandomAlias(),
+      academicYear: userInfo.academicYear || 'Student'
+    };
     const lastPartner = this.lastPartnerMap.get(socket.id);
 
-    // Filter available candidates from waiting queue
-    const validCandidates = this.waitingQueue.filter(
-      item => item.socket && item.socket.connected && item.socket.id !== socket.id
-    );
+    const candidateIdentities = new Set([userIdentity]);
+    const validCandidates = this.waitingQueue.filter(item => {
+      if (!item.socket?.connected) return false;
+      const identity = this.getUserIdentity(item.socket);
+      if (candidateIdentities.has(identity)) return false;
+      candidateIdentities.add(identity);
+      return true;
+    });
 
     if (validCandidates.length > 0) {
-      // Prefer partners who were not the immediate previous partner
       let candidatesPool = validCandidates.filter(item => item.socket.id !== lastPartner);
       if (candidatesPool.length === 0) {
         candidatesPool = validCandidates;
       }
 
-      // Completely RANDOM selection from candidate pool (Boy or Girl, completely randomized)
       const randomIndex = Math.floor(Math.random() * candidatesPool.length);
       const chosenPartner = candidatesPool[randomIndex];
-
-      // Remove chosen partner from waiting queue
-      this.waitingQueue = this.waitingQueue.filter(item => item.socket.id !== chosenPartner.socket.id);
-
-      // Give both users a realistic search & connecting experience (1.4s to 2.2s delay)
+      this.removeFromQueue(chosenPartner.socket.id);
       const matchDelay = 1400 + Math.floor(Math.random() * 800);
-
-      socket.emit('waiting', {
+      const reservation = {
+        socket,
+        userInfo: normalizedInfo,
+        partnerSocket: chosenPartner.socket,
+        partnerInfo: {
+          gender: chosenPartner.gender,
+          alias: chosenPartner.alias,
+          academicYear: chosenPartner.academicYear
+        },
+        timer: null
+      };
+      const notifyWaiting = () => socket.emit('waiting', {
         message: 'Connecting to someone at Piya Milan Chauraha...',
         queueSize: this.waitingQueue.length
       });
-
+      notifyWaiting();
       chosenPartner.socket.emit('waiting', {
         message: 'Connecting to someone at Piya Milan Chauraha...',
         queueSize: this.waitingQueue.length
       });
 
-      const timer = setTimeout(() => {
+      reservation.timer = setTimeout(() => {
+        if (
+          this.pendingMatches.get(socket.id) !== reservation ||
+          this.pendingMatches.get(chosenPartner.socket.id) !== reservation
+        ) return;
+
         this.pendingMatches.delete(socket.id);
         this.pendingMatches.delete(chosenPartner.socket.id);
-
-        if (socket.connected && chosenPartner.socket.connected) {
+        if (
+          socket.connected &&
+          chosenPartner.socket.connected &&
+          !this.userRooms.has(socket.id) &&
+          !this.userRooms.has(chosenPartner.socket.id)
+        ) {
           this.pair(
-            { socket, gender: userGender, alias: userAlias, academicYear: userYear },
-            chosenPartner
+            { socket, ...normalizedInfo },
+            { socket: chosenPartner.socket, ...reservation.partnerInfo }
           );
-        } else if (socket.connected) {
-          // Re-enqueue if partner disconnected during delay
-          this.enqueue(socket, { gender: userGender, preferredAlias: userAlias, academicYear: userYear });
-        } else if (chosenPartner.socket.connected) {
-          this.enqueue(chosenPartner.socket, { gender: chosenPartner.gender, preferredAlias: chosenPartner.alias, academicYear: chosenPartner.academicYear });
+        } else {
+          if (socket.connected && !this.userRooms.has(socket.id)) {
+            this.enqueue(socket, {
+              gender: normalizedInfo.gender,
+              preferredAlias: normalizedInfo.alias,
+              academicYear: normalizedInfo.academicYear
+            });
+          }
+          if (chosenPartner.socket.connected && !this.userRooms.has(chosenPartner.socket.id)) {
+            this.enqueue(chosenPartner.socket, {
+              gender: reservation.partnerInfo.gender,
+              preferredAlias: reservation.partnerInfo.alias,
+              academicYear: reservation.partnerInfo.academicYear
+            });
+          }
         }
       }, matchDelay);
 
-      this.pendingMatches.set(socket.id, timer);
-      this.pendingMatches.set(chosenPartner.socket.id, timer);
+      this.pendingMatches.set(socket.id, reservation);
+      this.pendingMatches.set(chosenPartner.socket.id, reservation);
       return;
     }
 
-    // No partner currently waiting, add to queue
-    const existingIndex = this.waitingQueue.findIndex(item => item.socket.id === socket.id);
-    if (existingIndex !== -1) {
-      this.waitingQueue[existingIndex] = {
-        socket,
-        gender: userGender,
-        alias: userAlias,
-        academicYear: userYear,
-        enteredAt: Date.now(),
-        lastPartnerId: lastPartner
-      };
-    } else {
-      this.waitingQueue.push({
-        socket,
-        gender: userGender,
-        alias: userAlias,
-        academicYear: userYear,
-        enteredAt: Date.now(),
-        lastPartnerId: lastPartner
-      });
-    }
-
+    this.waitingQueue.push({ socket, ...normalizedInfo, enteredAt: Date.now(), lastPartnerId: lastPartner });
     socket.emit('waiting', {
       message: 'Waiting at PMC...',
       queueSize: this.waitingQueue.length
@@ -151,6 +213,14 @@ class Matchmaker {
   }
 
   pair(user1, user2) {
+    if (
+      !user1.socket.connected ||
+      !user2.socket.connected ||
+      this.getUserIdentity(user1.socket) === this.getUserIdentity(user2.socket) ||
+      this.userRooms.has(user1.socket.id) ||
+      this.userRooms.has(user2.socket.id)
+    ) return;
+
     const roomId = `chauraha_${uuidv4()}`;
     const s1 = user1.socket;
     const s2 = user2.socket;
@@ -184,8 +254,6 @@ class Matchmaker {
       partnerGender: user1.gender,
       partnerAcademicYear: user1.academicYear || 'Student'
     });
-
-    this.activeMatchesCount++;
 
     s1.emit('matched', {
       roomId,
@@ -266,13 +334,8 @@ class Matchmaker {
 
   // Strict ephemeral wipe: purge from memory immediately upon exit
   leaveRoom(socket, reason = 'left') {
-    // Clear any pending match timer
-    if (this.pendingMatches.has(socket.id)) {
-      clearTimeout(this.pendingMatches.get(socket.id));
-      this.pendingMatches.delete(socket.id);
-    }
-
-    this.waitingQueue = this.waitingQueue.filter(item => item.socket.id !== socket.id);
+    this.removeFromQueue(socket.id);
+    this.cancelPendingMatch(socket);
 
     const session = this.userRooms.get(socket.id);
     if (!session) return;
@@ -288,10 +351,6 @@ class Matchmaker {
       partnerSocket.emit('partner_disconnected', {
         reason: reason === 'skipped' ? 'Stranger skipped to someone new.' : 'Stranger left the chat.'
       });
-    }
-
-    if (this.activeMatchesCount > 0) {
-      this.activeMatchesCount--;
     }
   }
 

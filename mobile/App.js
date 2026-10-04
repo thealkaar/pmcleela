@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { StyleSheet, View, Text, TouchableOpacity, SafeAreaView, Platform, ActivityIndicator } from 'react-native';
+import { StyleSheet, View, Text, TouchableOpacity, SafeAreaView, Platform, ActivityIndicator, Animated, Easing } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
@@ -37,6 +37,42 @@ export default function App() {
   const [currentTab, setCurrentTab] = useState('pmc'); // 'pmc' | 'leela' | 'me'
   const [serverHost, setServerHost] = useState(DEFAULT_HOST);
   const [activeChatPartner, setActiveChatPartner] = useState(null);
+  const tabTransitionOpacity = React.useRef(new Animated.Value(1)).current;
+  const tabTransitionId = React.useRef(0);
+  const interfaceTransitionOpacity = React.useRef(new Animated.Value(0)).current;
+
+  const switchTab = (tab) => {
+    if (tab === currentTab) return;
+    const transitionId = ++tabTransitionId.current;
+    tabTransitionOpacity.stopAnimation();
+    Animated.timing(tabTransitionOpacity, {
+      toValue: 0,
+      duration: 90,
+      easing: Easing.out(Easing.quad),
+      useNativeDriver: true
+    }).start(({ finished }) => {
+      if (!finished || transitionId !== tabTransitionId.current) return;
+      setCurrentTab(tab);
+      Animated.timing(tabTransitionOpacity, {
+        toValue: 1,
+        duration: 180,
+        easing: Easing.out(Easing.quad),
+        useNativeDriver: true
+      }).start();
+    });
+  };
+
+  React.useEffect(() => {
+    interfaceTransitionOpacity.setValue(0);
+    const transition = Animated.timing(interfaceTransitionOpacity, {
+      toValue: 1,
+      duration: 220,
+      easing: Easing.out(Easing.quad),
+      useNativeDriver: true
+    });
+    transition.start();
+    return () => transition.stop();
+  }, [Boolean(currentUser), isInitializing, interfaceTransitionOpacity]);
 
   // Load saved session on app launch
   useEffect(() => {
@@ -100,15 +136,16 @@ export default function App() {
 
   if (isInitializing) {
     return (
-      <View style={[styles.safeArea, { justifyContent: 'center', alignItems: 'center' }]}>
+      <Animated.View style={[styles.safeArea, { justifyContent: 'center', alignItems: 'center', opacity: interfaceTransitionOpacity }]}>
         <ActivityIndicator size="large" color="#ec4899" />
-      </View>
+      </Animated.View>
     );
   }
 
   // If not logged in, render dual-mode Login / Register screen
   if (!currentUser) {
     return (
+      <Animated.View style={{ flex: 1, opacity: interfaceTransitionOpacity }}>
       <SafeAreaView style={styles.safeArea}>
         <StatusBar style="light" />
         <LoginScreen
@@ -116,10 +153,12 @@ export default function App() {
           onLoginSuccess={handleLoginSuccess}
         />
       </SafeAreaView>
+      </Animated.View>
     );
   }
 
   return (
+    <Animated.View style={{ flex: 1, opacity: interfaceTransitionOpacity }}>
     <SafeAreaView style={styles.safeArea}>
       <StatusBar style="light" />
 
@@ -128,7 +167,7 @@ export default function App() {
         <TouchableOpacity
           style={styles.floatingActiveBanner}
           activeOpacity={0.9}
-          onPress={() => setCurrentTab('pmc')}
+          onPress={() => switchTab('pmc')}
         >
           <View style={styles.activeDot} />
           <Text style={styles.floatingBannerText} numberOfLines={1}>
@@ -139,7 +178,7 @@ export default function App() {
       )}
 
       {/* Keep screens mounted so chat never disconnects when switching tabs */}
-      <View style={styles.screensContainer}>
+      <Animated.View style={[styles.screensContainer, { opacity: tabTransitionOpacity }]}>
         {/* Tab 1: पी एम सी (Piya Milan Chauraha) */}
         <View
           style={[
@@ -183,14 +222,14 @@ export default function App() {
             onDeleteAccount={handleDeleteAccount}
           />
         </View>
-      </View>
+      </Animated.View>
 
       {/* Luxury Bottom Navigation Bar */}
       <View style={styles.tabBar}>
         {/* Tab 1: पी एम सी */}
         <TouchableOpacity
           style={styles.tabItem}
-          onPress={() => setCurrentTab('pmc')}
+          onPress={() => switchTab('pmc')}
           activeOpacity={0.75}
         >
           <View style={styles.tabIconContainer}>
@@ -214,7 +253,7 @@ export default function App() {
         {/* Tab 2: Leela */}
         <TouchableOpacity
           style={styles.tabItem}
-          onPress={() => setCurrentTab('leela')}
+          onPress={() => switchTab('leela')}
           activeOpacity={0.75}
         >
           <View style={styles.tabIconContainer}>
@@ -237,7 +276,7 @@ export default function App() {
         {/* Tab 3: Me */}
         <TouchableOpacity
           style={styles.tabItem}
-          onPress={() => setCurrentTab('me')}
+          onPress={() => switchTab('me')}
           activeOpacity={0.75}
         >
           <View style={styles.tabIconContainer}>
@@ -258,6 +297,7 @@ export default function App() {
         </TouchableOpacity>
       </View>
     </SafeAreaView>
+    </Animated.View>
   );
 }
 

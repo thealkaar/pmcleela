@@ -12,22 +12,26 @@ const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 let clientInstance;
 
 function getConfig() {
-  const { B2_BUCKET_NAME, B2_ENDPOINT, B2_KEY_ID, B2_APPLICATION_KEY } = process.env;
-  const region = process.env.B2_REGION;
-  if (!B2_BUCKET_NAME || !B2_ENDPOINT || !region || !B2_KEY_ID || !B2_APPLICATION_KEY) {
-    throw new Error('Backblaze B2 is not fully configured. Set B2_BUCKET_NAME, B2_ENDPOINT, B2_REGION, B2_KEY_ID, and B2_APPLICATION_KEY.');
+  const {
+    R2_BUCKET_NAME,
+    R2_ACCOUNT_ID,
+    R2_ACCESS_KEY_ID,
+    R2_SECRET_ACCESS_KEY
+  } = process.env;
+  if (!R2_BUCKET_NAME || !R2_ACCOUNT_ID || !R2_ACCESS_KEY_ID || !R2_SECRET_ACCESS_KEY) {
+    throw new Error('Cloudflare R2 is not fully configured. Set R2_BUCKET_NAME, R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, and R2_SECRET_ACCESS_KEY.');
   }
 
   return {
-    bucket: B2_BUCKET_NAME,
+    bucket: R2_BUCKET_NAME,
     client: clientInstance || (clientInstance = new S3Client({
-      endpoint: B2_ENDPOINT,
-      region,
+      endpoint: `https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
+      region: 'auto',
       forcePathStyle: true,
       requestChecksumCalculation: 'WHEN_REQUIRED',
       credentials: {
-        accessKeyId: B2_KEY_ID,
-        secretAccessKey: B2_APPLICATION_KEY
+        accessKeyId: R2_ACCESS_KEY_ID,
+        secretAccessKey: R2_SECRET_ACCESS_KEY
       }
     }))
   };
@@ -39,11 +43,10 @@ function isConfigured() {
 
 function getMissingConfig() {
   return [
-    'B2_BUCKET_NAME',
-    'B2_ENDPOINT',
-    'B2_REGION',
-    'B2_KEY_ID',
-    'B2_APPLICATION_KEY'
+    'R2_BUCKET_NAME',
+    'R2_ACCOUNT_ID',
+    'R2_ACCESS_KEY_ID',
+    'R2_SECRET_ACCESS_KEY'
   ].filter((key) => !process.env[key]);
 }
 
@@ -65,7 +68,7 @@ async function uploadVideo(filePath, contentType = 'video/mp4') {
 
 async function getVideoUrl(key) {
   const { bucket, client } = getConfig();
-  const configuredExpiry = Number(process.env.B2_SIGNED_URL_TTL_SECONDS || 43200);
+  const configuredExpiry = Number(process.env.R2_SIGNED_URL_TTL_SECONDS || 43200);
   const expiresIn = Number.isInteger(configuredExpiry) && configuredExpiry > 0 && configuredExpiry <= 604800
     ? configuredExpiry
     : 43200;

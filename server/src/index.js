@@ -12,7 +12,7 @@ const { LocalDB } = require('./db');
 const PrismaDB = require('./prismaDb');
 const { sendOtpEmail } = require('./emailService');
 const { trimAndCropVideo } = require('./videoProcessor');
-const b2Storage = require('./b2Storage');
+const r2Storage = require('./r2Storage');
 
 if (process.env.NODE_ENV === 'production' && !process.env.DATABASE_URL) {
   throw new Error('DATABASE_URL is required in production. Configure the Supabase PostgreSQL connection string.');
@@ -90,8 +90,12 @@ const matchmaker = new Matchmaker(io);
 // Socket.io Events
 io.on('connection', (socket) => {
   console.log(`[Socket] Connected: ${socket.id}`);
-  
-  socket.emit('online_stats', matchmaker.getOnlineStats());
+  const authenticatedUserId = socket.handshake.auth?.userId;
+  if (typeof authenticatedUserId === 'string' && authenticatedUserId.length > 0) {
+    socket.data.userId = authenticatedUserId;
+  }
+
+  io.emit('online_stats', matchmaker.getOnlineStats());
 
   // Enqueue user with gender, anonymous alias, and academic year
   socket.on('search_partner', (data) => {
@@ -365,24 +369,24 @@ app.delete('/api/auth/delete-account', async (req, res) => {
       }
     }
 
-    const failedB2Deletions = [];
+    const failedStorageDeletions = [];
     for (const key of result.deletedReelStorageKeys) {
       try {
-        await b2Storage.deleteVideo(key);
+        await r2Storage.deleteVideo(key);
       } catch (storageErr) {
-        failedB2Deletions.push(key);
-        console.error(`[Cleanup] Failed to delete B2 reel object ${key}:`, storageErr.message);
+        failedStorageDeletions.push(key);
+        console.error(`[Cleanup] Failed to delete R2 reel object ${key}:`, storageErr.message);
       }
     }
 
-    console.log(`[Account] Deleted user ${result.deletedUser.anonymousName} (${result.deletedUser.email}), removed ${result.deletedReelFiles.length} local reel files and ${result.deletedReelStorageKeys.length - failedB2Deletions.length} B2 reel objects`);
+    console.log(`[Account] Deleted user ${result.deletedUser.anonymousName} (${result.deletedUser.email}), removed ${result.deletedReelFiles.length} local reel files and ${result.deletedReelStorageKeys.length - failedStorageDeletions.length} R2 reel objects`);
 
-    res.status(failedB2Deletions.length ? 502 : 200).json({
-      success: failedB2Deletions.length === 0,
-      message: failedB2Deletions.length
+    res.status(failedStorageDeletions.length ? 502 : 200).json({
+      success: failedStorageDeletions.length === 0,
+      message: failedStorageDeletions.length
         ? 'Your account was deleted, but some reel videos could not be removed from storage.'
         : 'Your account and all associated data have been permanently deleted.',
-      deletedReels: result.deletedReelFiles.length + result.deletedReelStorageKeys.length - failedB2Deletions.length
+      deletedReels: result.deletedReelFiles.length + result.deletedReelStorageKeys.length - failedStorageDeletions.length
     });
   } catch (err) {
     console.error('Delete account error:', err);
@@ -399,7 +403,7 @@ app.get('/api/reels', async (req, res) => {
     const rawReels = await db.getReels(userId);
     const reels = await Promise.all(rawReels.map(async (r) => {
       if (r.videoStorageKey) {
-        return { ...r, videoUrl: await b2Storage.getVideoUrl(r.videoStorageKey) };
+        return { ...r, videoUrl: await r2Storage.getVideoUrl(r.videoStorageKey) };
       }
       let url = r.videoUrl;
       if (url && url.includes('/uploads/')) {
@@ -417,9 +421,9 @@ app.get('/api/reels', async (req, res) => {
 
 // 8. UPLOAD REEL TO CONFIGURED STORAGE
 app.post('/api/reels/upload', (req, res) => {
-  if (process.env.NODE_ENV === 'production' && !b2Storage.isConfigured()) {
+  if (process.env.NODE_ENV === 'production' && !r2Storage.isConfigured()) {
     console.error(
-      `[Leela] Rejecting reel upload: missing B2 environment variables: ${b2Storage.getMissingConfig().join(', ')}`
+      `[Leela] Rejecting reel upload: missing R2 environment variables: ${r2Storage.getMissingConfig().join(', ')}`
     );
     return res.status(503).json({
       success: false,
@@ -482,8 +486,8 @@ app.post('/api/reels/upload', (req, res) => {
       }
 
       if (uploadedPath) {
-        if (b2Storage.isConfigured()) {
-          uploadedStorageKey = await b2Storage.uploadVideo(uploadedPath, uploadContentType);
+        if (r2Storage.isConfigured()) {
+          uploadedStorageKey = await r2Storage.uploadVideo(uploadedPath, uploadContentType);
           await fs.promises.unlink(uploadedPath);
           uploadedPath = null;
         } else {
@@ -498,7 +502,7 @@ app.post('/api/reels/upload', (req, res) => {
       }
 
       const signedVideoUrl = uploadedStorageKey
-        ? await b2Storage.getVideoUrl(uploadedStorageKey)
+        ? await r2Storage.getVideoUrl(uploadedStorageKey)
         : null;
       const newReel = await db.addReel({
         creatorId,
@@ -522,8 +526,8 @@ app.post('/api/reels/upload', (req, res) => {
     } catch (saveErr) {
       console.error('Reel upload error:', saveErr);
       if (uploadedStorageKey) {
-        await b2Storage.deleteVideo(uploadedStorageKey).catch((cleanupError) => {
-          console.error('Could not remove failed B2 reel upload:', cleanupError);
+        await r2Storage.deleteVideo(uploadedStorageKey).catch((cleanupError) => {
+          console.error('Could not remove failed R2 reel upload:', cleanupError);
         });
       }
       if (uploadedPath) {
@@ -598,7 +602,7 @@ db.initialize().then(() => server.listen(PORT, '0.0.0.0', () => {
   console.log(`💾 Metadata database: ${process.env.DATABASE_URL ? 'Supabase PostgreSQL' : 'local JSON'}`);
   console.log(`🛡️ MANIT Email OTP Verification: Active (domain: @stu.manit.ac.in)`);
   console.log(`❤️ Piya Milan Chauraha: Socket.io Matchmaker Active`);
-  console.log(`🎬 Leela Reels: Video storage ${b2Storage.isConfigured() ? 'Backblaze B2' : 'local disk'}`);
+  console.log(`🎬 Leela Reels: Video storage ${r2Storage.isConfigured() ? 'Cloudflare R2' : 'local disk'}`);
   console.log(`===================================================`);
 })).catch((error) => {
   console.error('[Startup] Database initialization failed:', error);

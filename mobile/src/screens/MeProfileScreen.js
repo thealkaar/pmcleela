@@ -94,7 +94,7 @@ export default function MeProfileScreen({
 
   const handleDeleteAccount = () => {
     Alert.alert(
-      '⚠️ Delete Account',
+      'Delete account',
       'Are you sure you want to permanently delete your account? This will remove ALL your data including reels, chats, and profile. This action CANNOT be undone.',
       [
         { text: 'Cancel', style: 'cancel' },
@@ -104,7 +104,7 @@ export default function MeProfileScreen({
           onPress: () => {
             // Second confirmation
             Alert.alert(
-              '🚨 Final Confirmation',
+              'Final confirmation',
               `This will permanently delete the account "${currentUser?.anonymousName || 'your account'}" and all associated reels & data from the server. Are you absolutely sure?`,
               [
                 { text: 'No, Keep My Account', style: 'cancel' },
@@ -151,106 +151,104 @@ export default function MeProfileScreen({
   };
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-      {/* Top Profile Header */}
+    <ScrollView style={styles.container} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>Student Profile</Text>
-        <TouchableOpacity style={styles.settingsIcon} onPress={() => setShowSettingsModal(true)}>
-          <Ionicons name="settings-outline" size={22} color="#cbd5e1" />
+        <View>
+          <Text style={styles.headerEyebrow}>PMC LEELA</Text>
+          <Text style={styles.headerTitle}>Your account</Text>
+        </View>
+        <TouchableOpacity
+          style={styles.settingsIcon}
+          onPress={() => setShowSettingsModal(true)}
+          accessibilityRole="button"
+          accessibilityLabel="Account settings"
+        >
+          <Ionicons name="settings-outline" size={21} color="#dbe4f0" />
         </TouchableOpacity>
       </View>
 
-      {/* Avatar with Glow & Edit Badge */}
-      <View style={styles.avatarSection}>
-        <TouchableOpacity activeOpacity={0.85} onPress={handlePickAvatar} style={styles.avatarWrapper}>
-          {currentUser?.avatarUri || currentUser?.avatarUrl ? (
-            <Image source={{ uri: currentUser.avatarUri || currentUser.avatarUrl }} style={styles.avatarImage} />
-          ) : (
-            <View style={styles.avatarPlaceholder}>
-              <Ionicons name="person" size={44} color="#94a3b8" />
+      <View style={styles.profileHero}>
+        <View style={styles.profileHeroTop}>
+          <TouchableOpacity activeOpacity={0.85} onPress={handlePickAvatar} style={styles.avatarWrapper}>
+            {currentUser?.avatarUri || currentUser?.avatarUrl ? (
+              <Image source={{ uri: currentUser.avatarUri || currentUser.avatarUrl }} style={styles.avatarImage} />
+            ) : (
+              <View style={styles.avatarPlaceholder}>
+                <Ionicons name="person-outline" size={34} color="#94a3b8" />
+              </View>
+            )}
+            <View style={styles.cameraBadge}>
+              <Ionicons name="camera-outline" size={13} color="#ffffff" />
             </View>
-          )}
-          <View style={styles.cameraBadge}>
-            <Ionicons name="camera" size={14} color="#ffffff" />
-          </View>
-        </TouchableOpacity>
+          </TouchableOpacity>
 
-        <Text style={styles.displayName}>{currentUser?.anonymousName || 'Campus Scholar'}</Text>
-        
-        {/* Academic Year Seniority Badge */}
-        <View style={styles.seniorityRow}>
-          <Ionicons name="school" size={13} color="#f472b6" />
-          <Text style={styles.seniorityText}>
-            {formatYearShort(currentUser?.academicYear)} • {currentUser?.gender === 'female' ? 'Girl' : 'Boy'}
-          </Text>
+          <View style={styles.profileIdentity}>
+            <View style={styles.memberBadge}>
+              <Ionicons name="checkmark-circle" size={13} color="#6ee7b7" />
+              <Text style={styles.memberBadgeText}>MANIT STUDENT</Text>
+            </View>
+            <Text style={styles.displayName} numberOfLines={2}>
+              {currentUser?.anonymousName || 'Campus Scholar'}
+            </Text>
+            <Text style={styles.anonymousTag}>Your campus name</Text>
+          </View>
         </View>
 
-        <Text style={styles.anonymousTag}>Visible Persona in PMC & Leela</Text>
-        
-        {/* Verified Badge & Gender Tag */}
-        <View style={styles.badgeRow}>
-          <View style={styles.verifiedPill}>
-            <Ionicons name="checkmark-circle" size={14} color="#10b981" />
-            <Text style={styles.verifiedText}>{currentUser?.email || 'scholar@stu.manit.ac.in'}</Text>
-          </View>
+        <View style={styles.profileDivider} />
 
-          <View style={styles.genderPill}>
-            {currentUser?.gender === 'female' ? (
-              <View style={styles.greenDot} />
-            ) : (
-              <View style={styles.redDot} />
-            )}
-            <Text style={styles.genderPillText}>
-              {currentUser?.gender === 'female' ? 'Girl' : 'Boy'}
+        <View style={styles.profileMetaRow}>
+          <View style={styles.profileMetaItem}>
+            <Text style={styles.profileMetaLabel}>ACADEMIC YEAR</Text>
+            <Text style={styles.profileMetaValue}>{formatYearShort(currentUser?.academicYear)} year</Text>
+          </View>
+          <View style={styles.profileMetaDivider} />
+          <View style={styles.profileMetaItem}>
+            <Text style={styles.profileMetaLabel}>COLLEGE EMAIL</Text>
+            <Text style={styles.profileMetaValue} numberOfLines={1}>
+              {currentUser?.email || 'Not available'}
             </Text>
           </View>
         </View>
       </View>
 
-      {/* Real Student Identity (Private Shield) */}
+      <View style={styles.sectionHeadingRow}>
+        <View>
+          <Text style={styles.sectionTitle}>Private details</Text>
+          <Text style={styles.sectionDescription}>Only used for account verification</Text>
+        </View>
+        <View style={styles.privateStatus}>
+          <Ionicons name="lock-closed" size={12} color="#6ee7b7" />
+          <Text style={styles.privateStatusText}>PRIVATE</Text>
+        </View>
+      </View>
+
       <View style={styles.privateCard}>
-        <View style={styles.privateHeaderRow}>
-          <Ionicons name="shield-checkmark" size={18} color="#10b981" />
-          <Text style={styles.privateHeaderTitle}> MANIT Identity (Confidential)</Text>
-        </View>
-        
         <View style={styles.privateDetailRow}>
-          <Text style={styles.privateLabel}>Student Name:</Text>
-          <Text style={styles.privateValue}>{currentUser?.fullName || 'MANIT Student'}</Text>
+          <Text style={styles.privateLabel}>Legal name</Text>
+          <Text style={styles.privateValue} numberOfLines={1}>{currentUser?.fullName || 'MANIT Student'}</Text>
         </View>
-        
         {currentUser?.scholarNo ? (
           <View style={styles.privateDetailRow}>
-            <Text style={styles.privateLabel}>Scholar Number:</Text>
+            <Text style={styles.privateLabel}>Scholar number</Text>
             <Text style={styles.privateValue}>{currentUser.scholarNo}</Text>
           </View>
         ) : null}
-
-        {currentUser?.academicYear ? (
-          <View style={styles.privateDetailRow}>
-            <Text style={styles.privateLabel}>College Year:</Text>
-            <Text style={[styles.privateValue, { color: '#38bdf8' }]}>
-              {formatYearShort(currentUser.academicYear)}
-            </Text>
-          </View>
-        ) : null}
-
         {currentUser?.phone ? (
           <View style={styles.privateDetailRow}>
-            <Text style={styles.privateLabel}>Phone Number:</Text>
+            <Text style={styles.privateLabel}>Phone number</Text>
             <Text style={styles.privateValue}>{currentUser.phone}</Text>
           </View>
         ) : null}
-
-        <View style={styles.privateDivider} />
-        <Text style={styles.privateFooterNote}>
-          🔒 <Text style={{ fontWeight: '700', color: '#34d399' }}>Privacy Guarantee:</Text> Your real name, phone, and scholar number are strictly stored for campus authenticity & safety. They are never revealed to other students.
-        </Text>
+        <View style={styles.privateNotice}>
+          <Ionicons name="shield-checkmark-outline" size={16} color="#6ee7b7" />
+          <Text style={styles.privateFooterNote}>
+            Your personal details are not shown to other students.
+          </Text>
+        </View>
       </View>
 
-      {/* Campus Identity Details */}
       <View style={styles.menuSection}>
-        <Text style={styles.sectionHeader}>Campus Persona Settings</Text>
+        <Text style={styles.sectionTitle}>Preferences & safety</Text>
 
         {/* Change Anonymous Persona */}
         <TouchableOpacity
@@ -261,14 +259,17 @@ export default function MeProfileScreen({
           }}
           activeOpacity={0.8}
         >
-          <View style={styles.menuIconBox}>
-            <Ionicons name="pencil" size={16} color="#ec4899" />
+          <View style={[styles.menuIconBox, styles.personaIconBox]}>
+            <Ionicons name="person-outline" size={18} color="#f9a8d4" />
           </View>
           <View style={{ flex: 1, marginLeft: 12 }}>
-            <Text style={styles.menuTitle}>Anonymous Name </Text>
+            <Text style={styles.menuTitle}>Campus name</Text>
             <Text style={styles.menuSubtitle}>{currentUser?.anonymousName || 'Hostel Senior'}</Text>
           </View>
-          <Text style={styles.editActionText}>Change</Text>
+          <View style={styles.changeAction}>
+            <Text style={styles.editActionText}>Edit</Text>
+            <Ionicons name="chevron-forward" size={15} color="#f472b6" />
+          </View>
         </TouchableOpacity>
 
         {/* View Community Terms & Rules */}
@@ -277,21 +278,20 @@ export default function MeProfileScreen({
           onPress={() => setShowTermsModal(true)}
           activeOpacity={0.8}
         >
-          <View style={styles.menuIconBox}>
-            <Ionicons name="document-text-outline" size={16} color="#f59e0b" />
+          <View style={[styles.menuIconBox, styles.safetyIconBox]}>
+            <Ionicons name="shield-checkmark-outline" size={18} color="#93c5fd" />
           </View>
           <View style={{ flex: 1, marginLeft: 12 }}>
-            <Text style={styles.menuTitle}>Campus Safety & Conduct Policy</Text>
-            <Text style={styles.menuSubtitle}>Anti-harassment, anti-nudity terms</Text>
+            <Text style={styles.menuTitle}>Community guidelines</Text>
+            <Text style={styles.menuSubtitle}>Safety, privacy and conduct</Text>
           </View>
           <Ionicons name="chevron-forward" size={16} color="#64748b" />
         </TouchableOpacity>
       </View>
 
-      {/* Logout Action */}
       <TouchableOpacity style={styles.logoutButton} onPress={onLogout} activeOpacity={0.85}>
-        <Ionicons name="log-out-outline" size={18} color="#f87171" style={{ marginRight: 8 }} />
-        <Text style={styles.logoutButtonText}>Log Out</Text>
+        <Ionicons name="log-out-outline" size={18} color="#fda4af" style={{ marginRight: 9 }} />
+        <Text style={styles.logoutButtonText}>Sign out</Text>
       </TouchableOpacity>
 
       {/* Edit Anonymous Persona Modal */}
@@ -382,17 +382,26 @@ export default function MeProfileScreen({
             </View>
 
             <ScrollView style={{ maxHeight: 360 }} showsVerticalScrollIndicator={false}>
-              <Text style={styles.modalRuleTitle}>🚫 Zero Tolerance for Nudity</Text>
+              <View style={styles.ruleHeading}>
+                <Ionicons name="ban-outline" size={16} color="#fda4af" />
+                <Text style={styles.modalRuleTitle}>No explicit content</Text>
+              </View>
               <Text style={styles.modalRuleText}>
                 No explicit sexual content, nudity, or pornography is permitted. Violators face permanent bans and college disciplinary action.
               </Text>
 
-              <Text style={styles.modalRuleTitle}>🛑 Strict Anti-Harassment Policy</Text>
+              <View style={styles.ruleHeading}>
+                <Ionicons name="hand-left-outline" size={16} color="#fda4af" />
+                <Text style={styles.modalRuleTitle}>Respect every student</Text>
+              </View>
               <Text style={styles.modalRuleText}>
                 Harassment, abusive language, bullying, doxxing, or threats will be directly escalated to MANIT Proctorial Board.
               </Text>
 
-              <Text style={styles.modalRuleTitle}>🔒 Complete Privacy & Safety</Text>
+              <View style={styles.ruleHeading}>
+                <Ionicons name="lock-closed-outline" size={16} color="#6ee7b7" />
+                <Text style={styles.modalRuleTitle}>Protect personal information</Text>
+              </View>
               <Text style={styles.modalRuleText}>
                 Your real name, phone number, and scholar email are kept 100% confidential and are never revealed to other students.
               </Text>
@@ -411,225 +420,269 @@ export default function MeProfileScreen({
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#07080c'
+    backgroundColor: '#090b12'
   },
   content: {
-    paddingHorizontal: 20,
-    paddingTop: 50,
-    paddingBottom: 40
+    paddingHorizontal: 22,
+    paddingTop: 52,
+    paddingBottom: 44
   },
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 20
+    marginBottom: 24
+  },
+  headerEyebrow: {
+    color: '#8993a8',
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 1.8,
+    marginBottom: 5
   },
   headerTitle: {
-    color: '#fff',
-    fontSize: 24,
-    fontWeight: '800'
+    color: '#f4f6fb',
+    fontSize: 28,
+    fontWeight: '700',
+    letterSpacing: -0.7
   },
   settingsIcon: {
-    padding: 6
+    width: 42,
+    height: 42,
+    borderRadius: 14,
+    backgroundColor: '#151925',
+    borderWidth: 1,
+    borderColor: '#252b3a',
+    justifyContent: 'center',
+    alignItems: 'center'
   },
-  avatarSection: {
-    alignItems: 'center',
-    marginBottom: 20
+  profileHero: {
+    backgroundColor: '#121622',
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: '#252b3a',
+    padding: 18,
+    marginBottom: 26
+  },
+  profileHeroTop: {
+    flexDirection: 'row',
+    alignItems: 'center'
+  },
+  profileIdentity: {
+    flex: 1,
+    marginLeft: 16
   },
   avatarWrapper: {
     position: 'relative',
-    marginBottom: 12
+    marginBottom: 0
   },
   avatarImage: {
-    width: 90,
-    height: 90,
-    borderRadius: 45,
-    borderWidth: 2,
-    borderColor: '#ec4899'
+    width: 76,
+    height: 76,
+    borderRadius: 24,
+    borderWidth: 1.5,
+    borderColor: '#52506d'
   },
   avatarPlaceholder: {
-    width: 90,
-    height: 90,
-    borderRadius: 45,
-    backgroundColor: '#161926',
-    borderWidth: 2,
-    borderColor: '#ec4899',
+    width: 76,
+    height: 76,
+    borderRadius: 24,
+    backgroundColor: '#1b2030',
+    borderWidth: 1.5,
+    borderColor: '#383c50',
     justifyContent: 'center',
     alignItems: 'center'
   },
   cameraBadge: {
     position: 'absolute',
-    bottom: 2,
-    right: 2,
-    backgroundColor: '#ec4899',
-    width: 28,
-    height: 28,
-    borderRadius: 14,
+    bottom: -5,
+    right: -5,
+    backgroundColor: '#8b78e6',
+    width: 25,
+    height: 25,
+    borderRadius: 9,
     justifyContent: 'center',
     alignItems: 'center',
     borderWidth: 2,
-    borderColor: '#07080c'
+    borderColor: '#121622'
+  },
+  memberBadge: {
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: 'rgba(16, 185, 129, 0.09)',
+    borderColor: 'rgba(110, 231, 183, 0.18)',
+    borderWidth: 1,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 7,
+    marginBottom: 7
+  },
+  memberBadgeText: {
+    color: '#9fe5c8',
+    fontSize: 9,
+    fontWeight: '700',
+    letterSpacing: 0.8
   },
   displayName: {
-    color: '#f8fafc',
-    fontSize: 20,
-    fontWeight: '700'
+    color: '#f4f6fb',
+    fontSize: 21,
+    fontWeight: '700',
+    letterSpacing: -0.35
   },
   anonymousTag: {
-    color: '#94a3b8',
-    fontSize: 11.5,
-    marginTop: 2
+    color: '#929bad',
+    fontSize: 12,
+    marginTop: 3
   },
-  seniorityRow: {
+  profileDivider: {
+    height: 1,
+    backgroundColor: '#272c3a',
+    marginTop: 19,
+    marginBottom: 15
+  },
+  profileMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center'
+  },
+  profileMetaItem: {
+    flex: 1,
+    minWidth: 0
+  },
+  profileMetaDivider: {
+    width: 1,
+    height: 29,
+    backgroundColor: '#303545',
+    marginHorizontal: 14
+  },
+  profileMetaLabel: {
+    color: '#818a9e',
+    fontSize: 9,
+    fontWeight: '700',
+    letterSpacing: 0.9,
+    marginBottom: 5
+  },
+  profileMetaValue: {
+    color: '#e3e7f0',
+    fontSize: 12,
+    fontWeight: '600'
+  },
+  sectionHeadingRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(244, 114, 182, 0.12)',
-    paddingHorizontal: 10,
-    paddingVertical: 3,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(244, 114, 182, 0.25)',
-    marginTop: 6,
-    gap: 5
-  },
-  seniorityText: {
-    color: '#f472b6',
-    fontSize: 11.5,
-    fontWeight: '700'
-  },
-  badgeRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginTop: 8
-  },
-  verifiedPill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(16, 185, 129, 0.1)',
-    borderWidth: 1,
-    borderColor: 'rgba(16, 185, 129, 0.25)',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 14
-  },
-  verifiedText: {
-    color: '#34d399',
-    fontSize: 11,
-    fontWeight: '600',
-    marginLeft: 4
-  },
-  genderPill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(255, 255, 255, 0.06)',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)'
-  },
-  genderPillText: {
-    color: '#cbd5e1',
-    fontSize: 11,
-    fontWeight: '600',
-    marginLeft: 6
-  },
-  greenDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: '#10b981'
-  },
-  redDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: '#ef4444'
-  },
-  privateCard: {
-    backgroundColor: '#111422',
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: 'rgba(16, 185, 129, 0.2)',
-    padding: 16,
-    marginBottom: 20
-  },
-  privateHeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    justifyContent: 'space-between',
     marginBottom: 12
   },
-  privateHeaderTitle: {
-    color: '#34d399',
-    fontSize: 13,
+  sectionTitle: {
+    color: '#e9ecf4',
+    fontSize: 16,
     fontWeight: '700',
-    marginLeft: 8
+    letterSpacing: -0.15
+  },
+  sectionDescription: {
+    color: '#858ea2',
+    fontSize: 11.5,
+    marginTop: 4
+  },
+  privateStatus: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 5,
+    backgroundColor: 'rgba(16, 185, 129, 0.08)',
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 6
+  },
+  privateStatusText: {
+    color: '#9fe5c8',
+    fontSize: 9,
+    fontWeight: '700',
+    letterSpacing: 0.6
+  },
+  privateCard: {
+    backgroundColor: '#11151f',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#252c38',
+    padding: 16,
+    marginBottom: 27
   },
   privateDetailRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    paddingVertical: 4
+    alignItems: 'center',
+    paddingVertical: 9,
+    borderBottomWidth: 1,
+    borderBottomColor: '#202531'
   },
   privateLabel: {
-    color: '#94a3b8',
-    fontSize: 12.5
+    color: '#929bad',
+    fontSize: 12
   },
   privateValue: {
-    color: '#f8fafc',
-    fontSize: 12.5,
-    fontWeight: '600'
+    color: '#e4e8f0',
+    fontSize: 12,
+    fontWeight: '600',
+    maxWidth: '58%',
+    textAlign: 'right'
   },
-  privateDivider: {
-    height: 1,
-    backgroundColor: 'rgba(255, 255, 255, 0.06)',
-    marginVertical: 10
+  privateNotice: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 9,
+    marginTop: 13
   },
   privateFooterNote: {
-    color: '#94a3b8',
+    color: '#9ba5b7',
     fontSize: 11,
-    lineHeight: 16
+    lineHeight: 16,
+    flex: 1
   },
   menuSection: {
-    marginBottom: 24
-  },
-  sectionHeader: {
-    color: '#64748b',
-    fontSize: 12,
-    fontWeight: '700',
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-    marginBottom: 10
+    marginBottom: 22
   },
   menuItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#111420',
-    padding: 14,
-    borderRadius: 14,
-    marginBottom: 8,
+    backgroundColor: '#121622',
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    borderRadius: 15,
+    marginTop: 10,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.04)'
+    borderColor: '#252b39'
   },
   menuIconBox: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    backgroundColor: 'rgba(255,255,255,0.04)',
+    width: 39,
+    height: 39,
+    borderRadius: 12,
     justifyContent: 'center',
     alignItems: 'center'
   },
+  personaIconBox: {
+    backgroundColor: 'rgba(244, 114, 182, 0.11)'
+  },
+  safetyIconBox: {
+    backgroundColor: 'rgba(96, 165, 250, 0.11)'
+  },
   menuTitle: {
-    color: '#cbd5e1',
-    fontSize: 13.5,
+    color: '#e7eaf2',
+    fontSize: 13,
     fontWeight: '600'
   },
   menuSubtitle: {
-    color: '#94a3b8',
-    fontSize: 12,
-    marginTop: 2
+    color: '#8f98aa',
+    fontSize: 11.5,
+    marginTop: 4
+  },
+  changeAction: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3
   },
   editActionText: {
-    color: '#ec4899',
+    color: '#f0a2cc',
     fontSize: 12,
     fontWeight: '700'
   },
@@ -637,16 +690,16 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(239, 68, 68, 0.08)',
+    backgroundColor: '#11141c',
     borderWidth: 1,
-    borderColor: 'rgba(239, 68, 68, 0.2)',
-    paddingVertical: 14,
+    borderColor: '#2c2932',
+    paddingVertical: 15,
     borderRadius: 14
   },
   logoutButtonText: {
-    color: '#f87171',
+    color: '#fda4af',
     fontWeight: '700',
-    fontSize: 14
+    fontSize: 13
   },
   modalOverlay: {
     flex: 1,
@@ -675,11 +728,16 @@ const styles = StyleSheet.create({
     fontWeight: '700'
   },
   modalRuleTitle: {
-    color: '#f472b6',
+    color: '#e4e8f1',
     fontSize: 13,
     fontWeight: '700',
-    marginTop: 8,
-    marginBottom: 2
+    marginLeft: 8
+  },
+  ruleHeading: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 12,
+    marginBottom: 5
   },
   modalRuleText: {
     color: '#94a3b8',

@@ -12,7 +12,8 @@ import {
   Alert,
   Modal,
   Animated,
-  Easing
+  Easing,
+  Dimensions
 } from 'react-native';
 import io from 'socket.io-client';
 import * as ImagePicker from 'expo-image-picker';
@@ -50,7 +51,7 @@ export default function PmcChatScreen({ serverHost, currentUser, onActiveChatCha
   const [myAlias, setMyAlias] = useState('');
   const [myAcademicYear, setMyAcademicYear] = useState('');
   const [isPartnerTyping, setIsPartnerTyping] = useState(false);
-  const [onlineCount, setOnlineCount] = useState(8);
+  const [onlineCount, setOnlineCount] = useState(0);
   const [fullImageModal, setFullImageModal] = useState(null);
   const [waitingStatusIndex, setWaitingStatusIndex] = useState(0);
 
@@ -64,6 +65,7 @@ export default function PmcChatScreen({ serverHost, currentUser, onActiveChatCha
 
   // Blinking Glow Animation for Female Pink Indicator
   const blinkAnim = useRef(new Animated.Value(1)).current;
+  const screenTransition = useRef(new Animated.Value(1)).current;
 
   // Floating Love Particles Animations for Ambient Background
   const floatH1 = useRef(new Animated.Value(0)).current;
@@ -79,39 +81,46 @@ export default function PmcChatScreen({ serverHost, currentUser, onActiveChatCha
   const opacityH5 = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
-    // Ambient floating love hearts loop across the entire screen height
+    if (chatState !== 'idle') return undefined;
+    const travelDistance = Dimensions.get('window').height + 120;
+    [floatH1, floatH2, floatH3, floatH4, floatH5].forEach(value => value.setValue(0));
+    [opacityH1, opacityH2, opacityH3, opacityH4, opacityH5].forEach(value => value.setValue(0));
     const animateHeart = (animY, animOpacity, duration, delay = 0) => {
       return Animated.loop(
         Animated.sequence([
           Animated.delay(delay),
           Animated.parallel([
             Animated.timing(animY, {
-              toValue: -850,
+              toValue: -travelDistance,
               duration: duration,
-              easing: Easing.out(Easing.linear),
+              easing: Easing.linear,
+              isInteraction: false,
               useNativeDriver: true
             }),
             Animated.sequence([
               Animated.timing(animOpacity, {
                 toValue: 0.85,
                 duration: 800,
+                isInteraction: false,
                 useNativeDriver: true
               }),
               Animated.timing(animOpacity, {
                 toValue: 0.85,
                 duration: duration - 1600,
+                isInteraction: false,
                 useNativeDriver: true
               }),
               Animated.timing(animOpacity, {
                 toValue: 0,
                 duration: 800,
+                isInteraction: false,
                 useNativeDriver: true
               })
             ])
           ]),
           Animated.parallel([
-            Animated.timing(animY, { toValue: 0, duration: 0, useNativeDriver: true }),
-            Animated.timing(animOpacity, { toValue: 0, duration: 0, useNativeDriver: true })
+            Animated.timing(animY, { toValue: 0, duration: 16, isInteraction: false, useNativeDriver: true }),
+            Animated.timing(animOpacity, { toValue: 0, duration: 16, isInteraction: false, useNativeDriver: true })
           ])
         ])
       );
@@ -136,7 +145,19 @@ export default function PmcChatScreen({ serverHost, currentUser, onActiveChatCha
       l4.stop();
       l5.stop();
     };
-  }, []);
+  }, [chatState]);
+
+  useEffect(() => {
+    screenTransition.setValue(0);
+    const transition = Animated.timing(screenTransition, {
+      toValue: 1,
+      duration: 220,
+      easing: Easing.out(Easing.ease),
+      useNativeDriver: true
+    });
+    transition.start();
+    return () => transition.stop();
+  }, [chatState, screenTransition]);
 
   useEffect(() => {
     const blinkLoop = Animated.loop(
@@ -231,11 +252,12 @@ export default function PmcChatScreen({ serverHost, currentUser, onActiveChatCha
     const s = io(socketUrl, {
       transports: ['websocket', 'polling'],
       reconnectionAttempts: 10,
-      timeout: 10000
+      timeout: 10000,
+      auth: { userId: String(currentUser?.id || currentUser?.email || '') }
     });
 
     s.on('online_stats', (stats) => {
-      setOnlineCount(stats.totalConnected || 6);
+      setOnlineCount(Number.isFinite(stats?.totalConnected) ? stats.totalConnected : 0);
     });
 
     s.on('waiting', () => {
@@ -262,6 +284,10 @@ export default function PmcChatScreen({ serverHost, currentUser, onActiveChatCha
       setIsPartnerTyping(isTyping);
     });
 
+    s.on('error_message', ({ message }) => {
+      Alert.alert('Chat unavailable', message || 'Please try again.');
+    });
+
     s.on('partner_disconnected', (data) => {
       wipeAndEndChat(data.reason || 'Stranger left the chauraha.');
     });
@@ -269,9 +295,11 @@ export default function PmcChatScreen({ serverHost, currentUser, onActiveChatCha
     setSocket(s);
 
     return () => {
-      // Do not disconnect on simple tab switches
+      if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+      s.removeAllListeners();
+      s.disconnect();
     };
-  }, [serverHost]);
+  }, [serverHost, currentUser?.id]);
 
   const wipeAndEndChat = (notice) => {
     setMessages([]);
@@ -287,32 +315,36 @@ export default function PmcChatScreen({ serverHost, currentUser, onActiveChatCha
   };
 
   const startSearch = () => {
-    setMessages([]);
-    if (socket) {
-      socket.emit('search_partner', {
-        gender: currentUser?.gender || 'male',
-        preferredAlias: currentUser?.anonymousName,
-        academicYear: currentUser?.academicYear || 'Student'
-      });
-      setChatState('waiting');
+    if (!socket?.connected) {
+      Alert.alert('Connection unavailable', 'Could not connect to the chat server. Please try again.');
+      return;
     }
+    setMessages([]);
+    socket.emit('search_partner', {
+      gender: currentUser?.gender || 'male',
+      preferredAlias: currentUser?.anonymousName,
+      academicYear: currentUser?.academicYear || 'Student'
+    });
+    setChatState('waiting');
   };
 
   const handleNext = () => {
+    if (!socket?.connected) {
+      Alert.alert('Connection unavailable', 'Could not connect to the chat server. Please try again.');
+      return;
+    }
     setMessages([]);
     setPartnerAlias('');
     setPartnerAcademicYear('');
     setMyAlias('');
     setMyAcademicYear('');
     setIsPartnerTyping(false);
-    if (socket) {
-      socket.emit('next_partner', {
-        gender: currentUser?.gender || 'male',
-        preferredAlias: currentUser?.anonymousName,
-        academicYear: currentUser?.academicYear || 'Student'
-      });
-      setChatState('waiting');
-    }
+    socket.emit('next_partner', {
+      gender: currentUser?.gender || 'male',
+      preferredAlias: currentUser?.anonymousName,
+      academicYear: currentUser?.academicYear || 'Student'
+    });
+    setChatState('waiting');
   };
 
   const handleEndChat = () => {
@@ -405,7 +437,7 @@ export default function PmcChatScreen({ serverHost, currentUser, onActiveChatCha
   // ---------------- RENDER LOBBY (ROMANTIC ATMOSPHERE & COUPLE LOGO) ----------------
   if (chatState === 'idle') {
     return (
-      <View style={styles.darkCanvas}>
+      <Animated.View style={[styles.darkCanvas, { opacity: screenTransition }]}>
         {/* Ambient Floating Love Particles Generating from Connect with Piya Section */}
         <Animated.View style={[styles.floatingHeartItem, { left: '12%', bottom: 120, opacity: opacityH1, transform: [{ translateY: floatH1 }] }]}>
           <Ionicons name="heart" size={18} color="#ec4899" />
@@ -427,7 +459,9 @@ export default function PmcChatScreen({ serverHost, currentUser, onActiveChatCha
           {/* Header Presence Dot */}
           <View style={styles.liveBadge}>
             <View style={styles.onlineDot} />
-            <Text style={styles.liveBadgeText}>{onlineCount}  Piya Online</Text>
+            <Text style={styles.liveBadgeText}>
+              {onlineCount} {onlineCount === 1 ? 'Piya Online' : 'Piyas Online'}
+            </Text>
           </View>
 
           {/* Animated Couple Emblem */}
@@ -467,22 +501,14 @@ export default function PmcChatScreen({ serverHost, currentUser, onActiveChatCha
             <Ionicons name="arrow-forward" size={18} color="#ffffff" style={{ marginLeft: 8 }} />
           </TouchableOpacity>
         </View>
-      </View>
+      </Animated.View>
     );
   }
 
   // ---------------- RENDER WAITING STATE (CONNECTING TO PIYA + PULSING PINK HEART) ----------------
   if (chatState === 'waiting') {
     return (
-      <View style={styles.darkCanvas}>
-        {/* Ambient Floating Love Particles */}
-        <Animated.View style={[styles.floatingHeartItem, { left: '20%', bottom: '30%', transform: [{ translateY: floatH1 }] }]}>
-          <Ionicons name="heart" size={18} color="#ec4899" opacity={0.4} />
-        </Animated.View>
-        <Animated.View style={[styles.floatingHeartItem, { right: '20%', bottom: '40%', transform: [{ translateY: floatH2 }] }]}>
-          <Ionicons name="heart" size={15} color="#f472b6" opacity={0.4} />
-        </Animated.View>
-
+      <Animated.View style={[styles.darkCanvas, { opacity: screenTransition }]}>
         <View style={styles.waitingContent}>
           {/* Pulsing Concentric Radar Rings with Pulsating Pink Heart */}
           <View style={styles.radarBox}>
@@ -514,14 +540,14 @@ export default function PmcChatScreen({ serverHost, currentUser, onActiveChatCha
             <Text style={styles.cancelPillText}>Cancel</Text>
           </TouchableOpacity>
         </View>
-      </View>
+      </Animated.View>
     );
   }
 
   // ---------------- RENDER ACTIVE CHAT (WITH GENDER INDICATORS: GIRL=GREEN, BOY=RED) ----------------
   return (
     <KeyboardAvoidingView
-      style={styles.chatCanvas}
+      style={[styles.chatCanvas, { opacity: screenTransition }]}
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 20}
     >
@@ -571,11 +597,17 @@ export default function PmcChatScreen({ serverHost, currentUser, onActiveChatCha
         <View style={styles.navControls}>
           <TouchableOpacity style={styles.aglaPill} onPress={handleNext} activeOpacity={0.8}>
             <Ionicons name="refresh" size={14} color="#f472b6" />
-            <Text style={styles.aglaText}>Agla</Text>
+            <Text style={styles.aglaText}>Next</Text>
           </TouchableOpacity>
 
-          <TouchableOpacity style={styles.endIcon} onPress={handleEndChat}>
-            <Ionicons name="close" size={22} color="#94a3b8" />
+          <TouchableOpacity
+            style={styles.endChatButton}
+            onPress={handleEndChat}
+            accessibilityRole="button"
+            accessibilityLabel="End chat"
+          >
+            <Ionicons name="stop-circle-outline" size={16} color="#fda4af" />
+            <Text style={styles.endChatText}>End</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -1045,8 +1077,21 @@ const styles = StyleSheet.create({
     fontSize: 12,
     marginLeft: 4
   },
-  endIcon: {
-    padding: 6
+  endChatButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(239, 68, 68, 0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(239, 68, 68, 0.28)',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 16
+  },
+  endChatText: {
+    color: '#fda4af',
+    fontWeight: '700',
+    fontSize: 12,
+    marginLeft: 4
   },
   burnRibbon: {
     backgroundColor: '#130c14',

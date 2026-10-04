@@ -72,12 +72,15 @@ The repository includes a Render Blueprint at [`render.yaml`](./render.yaml). In
 * Start command: `npm start`
 * Health check path: `/api/health`
 * Upload limit: 100 MB; published reel length is limited to 20 seconds.
-* Private Backblaze B2 bucket `pmcleela` in region `us-east-005`; video playback uses expiring signed URLs.
+* Private Cloudflare R2 bucket; video playback uses expiring signed URLs.
 
 If creating a Web Service manually instead, use the same root directory, commands, and health-check path. Add the following secret environment variables in Render (never commit them or add them to the APK):
 
-* `B2_KEY_ID`: the key ID from a Backblaze application key restricted to this bucket with read, write, and delete access.
-* `B2_APPLICATION_KEY`: the secret application key value; do not use a master key.
+* `R2_BUCKET_NAME`: the name of the Cloudflare R2 bucket for reel videos.
+* `R2_ACCOUNT_ID`: your Cloudflare account ID. The S3 endpoint is constructed as `https://<account-id>.r2.cloudflarestorage.com`.
+* `R2_ACCESS_KEY_ID`: the access key ID from an R2 S3 API token scoped to this bucket with object read, write, and delete permissions.
+* `R2_SECRET_ACCESS_KEY`: the secret access key from the same R2 token. Keep both keys private and configure them only as Render environment variables.
+* `R2_SIGNED_URL_TTL_SECONDS`: optional signed playback link lifetime; defaults to 43200 seconds.
 * `DATABASE_URL`: the Supabase PostgreSQL **Transaction pooler** URI (shared pooler, port `6543`) with `?pgbouncer=true&sslmode=require`. Prisma uses this IPv4-accessible URI for application queries. Replace its password placeholder with your rotated database password.
 * `DIRECT_URL`: the Supabase PostgreSQL **Session pooler** URI (shared pooler, port `5432`) with `?sslmode=require`. Prisma uses this for schema migrations. Use the same rotated password and keep this server-side as a Render secret.
 * `BREVO_API_KEY`: required for student OTP email. Also set `FROM_EMAIL` to the sender address verified with Brevo. OTP registration returns an error until the email API key is configured.
@@ -97,4 +100,6 @@ cd mobile
 
 ### Render Free limitations
 
-Render Free instances spin down while idle and may take about a minute to wake. Video objects persist in Backblaze B2 and user/reel metadata persists in Supabase, while chat matchmaking and OTPs are held in process memory. This deployment is suitable for a test/pilot only—not durable public use. Shared OTP/chat state, authentication hardening, and moderation are still needed before public launch. FFmpeg trimming still runs on the free web instance and can fail under its limited resources.
+Render Free instances spin down while idle and may take about a minute to wake. Video objects persist in Cloudflare R2 and user/reel metadata persists in Supabase, while chat matchmaking and OTPs are held in process memory. This deployment is suitable for a test/pilot only—not durable public use. Shared OTP/chat state, authentication hardening, and moderation are still needed before public launch. FFmpeg trimming still runs on the free web instance and can fail under its limited resources.
+
+When moving from Backblaze B2 to R2, existing reel metadata continues to reference the same object keys. Copy existing objects to the R2 bucket with those exact keys before switching traffic if those reels must remain playable; configuring new R2 credentials does not transfer old video objects.

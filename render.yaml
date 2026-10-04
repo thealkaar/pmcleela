@@ -20,15 +20,13 @@ services:
         sync: false
       - key: DIRECT_URL
         sync: false
-      - key: B2_BUCKET_NAME
-        value: pmcleela
-      - key: B2_ENDPOINT
-        value: https://s3.us-east-005.backblazeb2.com
-      - key: B2_REGION
-        value: us-east-005
-      - key: B2_SIGNED_URL_TTL_SECONDS
+      - key: R2_BUCKET_NAME
+        sync: false
+      - key: R2_ACCOUNT_ID
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_SIGNED_URL_TTL_SECONDS
         value: "43200"
-      - key: B2_KEY_ID
-        sync: false
-      - key: B2_APPLICATION_KEY
-        sync: false

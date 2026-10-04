@@ -14,7 +14,8 @@ import {
   Share,
   Alert,
   KeyboardAvoidingView,
-  Platform
+  Platform,
+  PermissionsAndroid
 } from 'react-native';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import * as ImagePicker from 'expo-image-picker';
@@ -22,6 +23,7 @@ import { File, UploadType } from 'expo-file-system';
 import { Ionicons } from '@expo/vector-icons';
 import VideoSlideTrimmer from '../components/VideoSlideTrimmer';
 import { getBaseUrl } from '../config';
+import BackgroundReelUpload from '../../modules/background-reel-upload/src';
 
 const formatYearShort = (val) => {
   if (!val) return '1st';
@@ -272,35 +274,6 @@ function VideoStoryEditor({
         </View>
       </KeyboardAvoidingView>
 
-      {uploading && (
-        <View style={styles.uploadProgressOverlay} accessibilityRole="progressbar"
-          accessibilityValue={{ min: 0, max: 100, now: uploadProgress }}>
-          <View style={styles.uploadProgressCard}>
-            <View style={styles.uploadProgressIcon}>
-              <Ionicons name="cloud-upload-outline" size={26} color="#a5f3fc" />
-            </View>
-            <Text style={styles.uploadProgressTitle}>
-              {uploadProgress >= 99 ? 'Finishing your reel' : 'Publishing your reel'}
-            </Text>
-            <Text style={styles.uploadProgressSubtitle}>
-              {uploadProgress >= 99
-                ? 'Almost there — processing your video'
-                : 'Keep the app open while your video uploads'}
-            </Text>
-            <Text style={styles.uploadProgressPercent}>{uploadProgress}%</Text>
-            <View style={styles.uploadProgressTrack}>
-              <View
-                style={[
-                  styles.uploadProgressFill,
-                  { width: `${Math.max(0, Math.min(uploadProgress, 100))}%` }
-                ]}
-              />
-            </View>
-            <Text style={styles.uploadProgressFootnote}>This may take a moment</Text>
-          </View>
-        </View>
-      )}
-
       {/* Audio Title Modal */}
       <Modal visible={showAudioModal} transparent animationType="fade">
         <View style={styles.audioModalBackdrop}>
@@ -417,6 +390,7 @@ function ReelItem({
           style={[
             styles.centerPlayOverlay,
             {
+              top: Math.max(0, height / 2 - 41),
               opacity: playbackFeedback.current,
               transform: [{
                 scale: playbackFeedback.current.interpolate({
@@ -471,11 +445,13 @@ function ReelItem({
           onPress={() => onLike(item.id)}
           activeOpacity={0.7}
         >
-          <Ionicons
-            name={item.isLiked ? 'heart' : 'heart-outline'}
-            size={32}
-            color={item.isLiked ? '#ef4444' : '#ffffff'}
-          />
+          <View style={[styles.actionIconCircle, item.isLiked && styles.likedActionCircle]}>
+            <Ionicons
+              name={item.isLiked ? 'heart' : 'heart-outline'}
+              size={24}
+              color={item.isLiked ? '#ef4444' : '#ffffff'}
+            />
+          </View>
           <Text style={styles.actionCount}>{item.likesCount || 0}</Text>
         </TouchableOpacity>
 
@@ -484,7 +460,9 @@ function ReelItem({
           onPress={() => onOpenComments(item)}
           activeOpacity={0.7}
         >
-          <Ionicons name="chatbubble-ellipses-outline" size={30} color="#ffffff" />
+          <View style={styles.actionIconCircle}>
+            <Ionicons name="chatbubble-ellipses-outline" size={22} color="#ffffff" />
+          </View>
           <Text style={styles.actionCount}>{item.commentsCount || 0}</Text>
         </TouchableOpacity>
 
@@ -493,7 +471,9 @@ function ReelItem({
           onPress={() => onShare(item)}
           activeOpacity={0.7}
         >
-          <Ionicons name="paper-plane-outline" size={28} color="#ffffff" />
+          <View style={styles.actionIconCircle}>
+            <Ionicons name="paper-plane-outline" size={21} color="#ffffff" />
+          </View>
           <Text style={styles.actionCount}>Share</Text>
         </TouchableOpacity>
       </View>
@@ -501,21 +481,60 @@ function ReelItem({
   );
 }
 
-async function uploadVideoFile(url, uri, fields, onProgress) {
-  const filename = uri.split(/[?#]/)[0].split('/').pop() || `reel_${Date.now()}.mp4`;
-  const match = /\.(\w+)$/.exec(filename);
-  const mimeType = match ? `video/${match[1].toLowerCase()}` : 'video/mp4';
+async function uploadVideoFile(url, uri, fields, onProgress, onStarted) {
   const parameters = Object.fromEntries(
     Object.entries(fields)
       .filter(([, value]) => value !== undefined && value !== null)
       .map(([key, value]) => [key, String(value)])
   );
+  if (Platform.OS === 'android') {
+    if (!BackgroundReelUpload) {
+      throw new Error('Background uploads need the installed Android app. They are not available in Expo Go.');
+    }
+    const uploadId = await BackgroundReelUpload.startUpload(url, uri, parameters);
+    onStarted?.();
+    while (true) {
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      const state = await BackgroundReelUpload.getUploadState();
+      if (state.uploadId !== uploadId) continue;
+      onProgress(Math.min(99, Math.max(0, Number(state.progress) || 0)));
+      if (state.status === 'completed') {
+        let response;
+        try {
+          response = JSON.parse(state.responseBody);
+        } catch (error) {
+          throw new Error('Server returned an invalid upload response.');
+        }
+        if (!response.success) {
+          throw new Error(response.message || 'The server rejected the reel upload.');
+        }
+        await BackgroundReelUpload.clearUploadState();
+        onProgress(100);
+        return response;
+      }
+      if (state.status === 'failed') {
+        let serverMessage;
+        try {
+          serverMessage = JSON.parse(state.responseBody).message;
+        } catch (error) {
+          serverMessage = null;
+        }
+        await BackgroundReelUpload.clearUploadState();
+        throw new Error(serverMessage || state.error || 'Could not upload the video.');
+      }
+    }
+  }
+
+  const filename = uri.split(/[?#]/)[0].split('/').pop() || `reel_${Date.now()}.mp4`;
+  const match = /\.(\w+)$/.exec(filename);
+  const mimeType = match ? `video/${match[1].toLowerCase()}` : 'video/mp4';
   const task = new File(uri).createUploadTask(url, {
     httpMethod: 'POST',
     uploadType: UploadType.MULTIPART,
     fieldName: 'video',
     mimeType,
     parameters,
+    sessionType: 'background',
     onProgress: ({ bytesSent, totalBytes }) => {
       if (totalBytes > 0) {
         onProgress(Math.min(99, Math.floor((bytesSent / totalBytes) * 100)));
@@ -524,7 +543,9 @@ async function uploadVideoFile(url, uri, fields, onProgress) {
   });
 
   try {
-    const result = await task.uploadAsync();
+    const uploadPromise = task.uploadAsync();
+    onStarted?.();
+    const result = await uploadPromise;
     let response;
     try {
       response = JSON.parse(result.body);
@@ -563,7 +584,7 @@ export default function LeelaReelsScreen({ serverHost, currentUser, isTabActive 
   const [selectedReel, setSelectedReel] = useState(null);
   const [commentText, setCommentText] = useState('');
   const [commentPosting, setCommentPosting] = useState(false);
-  const likeRequestsRef = useRef(new Set());
+  const likeQueuesRef = useRef(new Map());
 
   // Picker & Story Editor Modal States
   const [pickerModalVisible, setPickerModalVisible] = useState(false);
@@ -572,6 +593,11 @@ export default function LeelaReelsScreen({ serverHost, currentUser, isTabActive 
   const [uploadProgress, setUploadProgress] = useState(0);
   const [selectedVideoUri, setSelectedVideoUri] = useState(null);
   const [publishSuccessVisible, setPublishSuccessVisible] = useState(false);
+  const isTabActiveRef = useRef(isTabActive);
+
+  useEffect(() => {
+    isTabActiveRef.current = isTabActive;
+  }, [isTabActive]);
 
   // Fetch reels from backend
   const fetchReels = async () => {
@@ -602,15 +628,25 @@ export default function LeelaReelsScreen({ serverHost, currentUser, isTabActive 
     fetchReels();
   };
 
-  const handleLike = async (reelId) => {
+  const handleLike = (reelId) => {
     const userId = currentUser?.id;
     if (!userId) {
       Alert.alert('Sign in required', 'Please sign in again to like reels.');
       return;
     }
-    if (likeRequestsRef.current.has(reelId)) return;
-    likeRequestsRef.current.add(reelId);
-    try {
+    setReels((prev) => prev.map((reel) => {
+      if (reel.id !== reelId) return reel;
+      const isLiked = !reel.isLiked;
+      return {
+        ...reel,
+        isLiked,
+        likesCount: Math.max(0, (Number(reel.likesCount) || 0) + (isLiked ? 1 : -1))
+      };
+    }));
+
+    const queue = likeQueuesRef.current.get(reelId) || { promise: Promise.resolve(), pending: 0 };
+    queue.pending += 1;
+    queue.promise = queue.promise.catch(() => {}).then(async () => {
       const response = await fetch(`${getBaseUrl(serverHost)}/api/reels/${reelId}/like`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -620,16 +656,37 @@ export default function LeelaReelsScreen({ serverHost, currentUser, isTabActive 
       if (!response.ok || !result.success) {
         throw new Error(result.message || 'Could not update your like.');
       }
-      setReels((prev) => prev.map((reel) => (
-        reel.id === reelId
-          ? { ...reel, isLiked: result.data.isLiked, likesCount: result.data.likesCount }
-          : reel
-      )));
-    } catch (error) {
-      Alert.alert('Like not saved', error.message || 'Please try again.');
-    } finally {
-      likeRequestsRef.current.delete(reelId);
-    }
+      queue.pending -= 1;
+      if (queue.pending === 0) {
+        setReels((prev) => prev.map((reel) => (
+          reel.id === reelId
+            ? { ...reel, isLiked: result.data.isLiked, likesCount: result.data.likesCount }
+            : reel
+        )));
+        likeQueuesRef.current.delete(reelId);
+      }
+    }).catch(async (error) => {
+      queue.pending -= 1;
+      if (queue.pending === 0) {
+        likeQueuesRef.current.delete(reelId);
+        try {
+          const userQuery = `?userId=${encodeURIComponent(userId)}`;
+          const response = await fetch(`${getBaseUrl(serverHost)}/api/reels${userQuery}`);
+          const result = await response.json();
+          if (!response.ok || !result.success || !Array.isArray(result.data)) {
+            throw new Error(result.message || 'Could not refresh the reel.');
+          }
+          const updatedReel = result.data.find((reel) => reel.id === reelId);
+          if (updatedReel) {
+            setReels((prev) => prev.map((reel) => reel.id === reelId ? updatedReel : reel));
+          }
+        } catch (refreshError) {
+          console.log('Could not reconcile failed reel like:', refreshError.message);
+        }
+        Alert.alert('Like not saved', error.message || 'Please try again.');
+      }
+    });
+    likeQueuesRef.current.set(reelId, queue);
   };
 
   const handleOpenComments = (reel) => {
@@ -637,42 +694,85 @@ export default function LeelaReelsScreen({ serverHost, currentUser, isTabActive 
     setCommentsModalVisible(true);
   };
 
-  const handlePostComment = async () => {
+  const handlePostComment = () => {
     const text = commentText.trim();
     if (!text || !selectedReel || commentPosting) return;
+    const reelId = selectedReel.id;
     const userYear = currentUser?.academicYear || 'Student';
+    const optimisticComment = {
+      id: `pending_${Date.now()}`,
+      user: currentUser?.anonymousName || 'Student',
+      userYear,
+      text,
+      time: 'Sending…',
+      pending: true
+    };
+    const updatedComments = [optimisticComment, ...(selectedReel.comments || [])];
+    setSelectedReel((prev) => prev?.id === reelId
+      ? { ...prev, comments: updatedComments, commentsCount: (Number(prev.commentsCount) || 0) + 1 }
+      : prev);
+    setReels((prev) => prev.map((reel) => (
+      reel.id === reelId
+        ? { ...reel, comments: updatedComments, commentsCount: (Number(reel.commentsCount) || 0) + 1 }
+        : reel
+    )));
+    setCommentText('');
     setCommentPosting(true);
-    try {
-      const response = await fetch(`${getBaseUrl(serverHost)}/api/reels/${selectedReel.id}/comments`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          user: currentUser?.anonymousName || 'Student',
-          userYear,
-          text
-        })
-      });
-      const result = await response.json();
-      if (!response.ok || !result.success || !result.data) {
-        throw new Error(result.message || 'Could not save your comment.');
+    void (async () => {
+      try {
+        const response = await fetch(`${getBaseUrl(serverHost)}/api/reels/${reelId}/comments`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            user: currentUser?.anonymousName || 'Student',
+            userYear,
+            text
+          })
+        });
+        const result = await response.json();
+        if (!response.ok || !result.success || !result.data) {
+          throw new Error(result.message || 'Could not save your comment.');
+        }
+        const confirmedComment = { ...result.data, pending: false };
+        setSelectedReel((prev) => prev?.id === reelId ? {
+          ...prev,
+          comments: (prev.comments || []).map((comment) => (
+            comment.id === optimisticComment.id ? confirmedComment : comment
+          )),
+          commentsCount: result.commentsCount
+        } : prev);
+        setReels((prev) => prev.map((reel) => (
+          reel.id === reelId
+            ? {
+              ...reel,
+              comments: (reel.comments || []).map((comment) => (
+                comment.id === optimisticComment.id ? confirmedComment : comment
+              )),
+              commentsCount: result.commentsCount
+            }
+            : reel
+        )));
+      } catch (error) {
+        setSelectedReel((prev) => prev?.id === reelId ? {
+          ...prev,
+          comments: (prev.comments || []).filter((comment) => comment.id !== optimisticComment.id),
+          commentsCount: Math.max(0, (Number(prev.commentsCount) || 1) - 1)
+        } : prev);
+        setReels((prev) => prev.map((reel) => (
+          reel.id === reelId
+            ? {
+              ...reel,
+              comments: (reel.comments || []).filter((comment) => comment.id !== optimisticComment.id),
+              commentsCount: Math.max(0, (Number(reel.commentsCount) || 1) - 1)
+            }
+            : reel
+        )));
+        setCommentText((currentText) => currentText || text);
+        Alert.alert('Comment not saved', error.message || 'Please try again.');
+      } finally {
+        setCommentPosting(false);
       }
-      const updatedComments = [result.data, ...(selectedReel.comments || [])];
-      setSelectedReel({
-        ...selectedReel,
-        comments: updatedComments,
-        commentsCount: result.commentsCount
-      });
-      setReels((prev) => prev.map((reel) => (
-        reel.id === selectedReel.id
-          ? { ...reel, comments: updatedComments, commentsCount: result.commentsCount }
-          : reel
-      )));
-      setCommentText('');
-    } catch (error) {
-      Alert.alert('Comment not saved', error.message || 'Please try again.');
-    } finally {
-      setCommentPosting(false);
-    }
+    })();
   };
 
   const handleShare = async (reel) => {
@@ -740,6 +840,19 @@ export default function LeelaReelsScreen({ serverHost, currentUser, isTabActive 
     }
 
     try {
+      if (Platform.OS === 'android' && Number(Platform.Version) >= 33) {
+        const notificationPermission = 'android.permission.POST_NOTIFICATIONS';
+        const permission = await PermissionsAndroid.request(notificationPermission, {
+          title: 'Allow upload notifications',
+          message: 'Leela uses notifications to show reel upload progress while you use other apps.',
+          buttonPositive: 'Allow',
+          buttonNegative: 'Not now'
+        });
+        if (permission !== PermissionsAndroid.RESULTS.GRANTED) {
+          Alert.alert('Notifications needed', 'Allow notifications to upload reels in the background and see their progress.');
+          return;
+        }
+      }
       setUploading(true);
       setUploadProgress(0);
 
@@ -757,20 +870,25 @@ export default function LeelaReelsScreen({ serverHost, currentUser, isTabActive 
         trimStart: String(trimStart),
         trimEnd: String(trimEnd),
         cropMode: cropMode || '9:16'
-      }, setUploadProgress);
+      }, setUploadProgress, () => {
+        setStoryEditorVisible(false);
+        setSelectedVideoUri(null);
+      });
 
       if (uploadResult && uploadResult.success) {
         // Fetch all reels from server to display permanently
         await fetchReels();
         setStoryEditorVisible(false);
         setSelectedVideoUri(null);
-        setPublishSuccessVisible(true);
+        if (isTabActiveRef.current) setPublishSuccessVisible(true);
       } else {
         throw new Error(uploadResult?.message || 'Server rejected upload');
       }
     } catch (err) {
       console.log('Upload error:', err);
-      Alert.alert('Upload Failed', `Could not publish reel: ${err.message}`);
+      if (isTabActiveRef.current) {
+        Alert.alert('Upload Failed', `Could not publish reel: ${err.message}`);
+      }
     } finally {
       setUploading(false);
     }
@@ -801,12 +919,29 @@ export default function LeelaReelsScreen({ serverHost, currentUser, isTabActive 
           <TouchableOpacity
             style={styles.uploadButton}
             onPress={() => setPickerModalVisible(true)}
+            disabled={uploading}
+            activeOpacity={uploading ? 1 : 0.85}
           >
             <Ionicons name="add" size={18} color="#fff" />
             <Text style={styles.uploadButtonText}>Post</Text>
           </TouchableOpacity>
         </View>
       </View>
+
+      {uploading && (
+        <View style={styles.uploadStatusBanner} pointerEvents="none">
+          <Ionicons name="cloud-upload-outline" size={18} color="#a5f3fc" />
+          <View style={styles.uploadStatusTextGroup}>
+            <Text style={styles.uploadStatusTitle}>
+              {uploadProgress >= 99 ? 'Finishing your reel' : 'Publishing your reel'}
+            </Text>
+            <View style={styles.uploadStatusTrack}>
+              <View style={[styles.uploadStatusFill, { width: `${uploadProgress}%` }]} />
+            </View>
+          </View>
+          <Text style={styles.uploadStatusPercent}>{uploadProgress}%</Text>
+        </View>
+      )}
 
       {/* If No Reels, Show Clean Empty State */}
       {reels.length === 0 ? (
@@ -821,6 +956,7 @@ export default function LeelaReelsScreen({ serverHost, currentUser, isTabActive 
           <TouchableOpacity
             style={styles.postFirstBtn}
             onPress={() => setPickerModalVisible(true)}
+            disabled={uploading}
           >
             <Ionicons name="add" size={20} color="#ffffff" style={{ marginRight: 6 }} />
             <Text style={styles.postFirstBtnText}>Post First Reel</Text>
@@ -897,7 +1033,9 @@ export default function LeelaReelsScreen({ serverHost, currentUser, isTabActive 
                           <Text style={styles.commentYearText}>{formatYearShort(item.userYear)}</Text>
                         </View>
                       ) : null}
-                      <Text style={styles.commentTime}>{item.time}</Text>
+                      <Text style={[styles.commentTime, item.pending && styles.pendingCommentTime]}>
+                        {item.pending ? 'Sending…' : item.time}
+                      </Text>
                     </View>
                     <Text style={styles.commentContent}>{item.text}</Text>
                   </View>
@@ -1032,13 +1170,63 @@ const styles = StyleSheet.create({
   },
   topBar: {
     position: 'absolute',
-    top: 48,
-    left: 16,
-    right: 16,
+    top: 46,
+    left: 14,
+    right: 14,
     zIndex: 20,
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center'
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 18,
+    backgroundColor: 'rgba(7, 8, 12, 0.72)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)'
+  },
+  uploadStatusBanner: {
+    position: 'absolute',
+    top: 100,
+    left: 16,
+    right: 16,
+    zIndex: 19,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 16,
+    backgroundColor: 'rgba(15, 23, 42, 0.94)',
+    borderWidth: 1,
+    borderColor: 'rgba(34, 211, 238, 0.25)'
+  },
+  uploadStatusTextGroup: {
+    flex: 1,
+    gap: 6
+  },
+  uploadStatusTitle: {
+    color: '#e2e8f0',
+    fontSize: 12,
+    fontWeight: '700'
+  },
+  uploadStatusTrack: {
+    height: 3,
+    borderRadius: 2,
+    overflow: 'hidden',
+    backgroundColor: 'rgba(148, 163, 184, 0.25)'
+  },
+  uploadStatusFill: {
+    height: '100%',
+    borderRadius: 2,
+    backgroundColor: '#22d3ee'
+  },
+  uploadStatusPercent: {
+    minWidth: 38,
+    color: '#cffafe',
+    fontSize: 12,
+    fontWeight: '800',
+    textAlign: 'right',
+    fontVariant: ['tabular-nums']
   },
   appTitle: {
     fontSize: 22,
@@ -1059,21 +1247,23 @@ const styles = StyleSheet.create({
     fontWeight: '800'
   },
   iconButton: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: 'rgba(0,0,0,0.6)',
+    width: 34,
+    height: 34,
+    borderRadius: 12,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: 8
+    marginRight: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)'
   },
   uploadButton: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#ec4899',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 16
+    paddingHorizontal: 13,
+    paddingVertical: 8,
+    borderRadius: 13
   },
   uploadButtonText: {
     color: '#fff',
@@ -1130,9 +1320,15 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end'
   },
   bottomOverlay: {
-    paddingHorizontal: 16,
-    paddingBottom: 24,
-    width: '80%'
+    marginLeft: 14,
+    marginBottom: 22,
+    paddingHorizontal: 14,
+    paddingVertical: 13,
+    width: '77%',
+    borderRadius: 18,
+    backgroundColor: 'rgba(7, 8, 12, 0.72)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)'
   },
   creatorInfo: {
     flexDirection: 'row',
@@ -1140,13 +1336,15 @@ const styles = StyleSheet.create({
     marginBottom: 8
   },
   creatorAvatarBox: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
+    width: 34,
+    height: 34,
+    borderRadius: 12,
     backgroundColor: '#1e2438',
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: 8
+    marginRight: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(236, 72, 153, 0.36)'
   },
   creatorName: {
     color: '#ffffff',
@@ -1166,9 +1364,9 @@ const styles = StyleSheet.create({
   },
   caption: {
     color: '#f1f5f9',
-    fontSize: 14,
-    lineHeight: 20,
-    marginBottom: 10
+    fontSize: 13,
+    lineHeight: 19,
+    marginBottom: 11
   },
   soundPill: {
     flexDirection: 'row',
@@ -1187,12 +1385,32 @@ const styles = StyleSheet.create({
   sideActions: {
     position: 'absolute',
     right: 12,
-    bottom: 24,
-    alignItems: 'center'
+    bottom: 25,
+    alignItems: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 5,
+    borderRadius: 24,
+    backgroundColor: 'rgba(7, 8, 12, 0.52)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)'
   },
   actionItem: {
     alignItems: 'center',
-    marginBottom: 20
+    marginBottom: 13
+  },
+  actionIconCircle: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.12)'
+  },
+  likedActionCircle: {
+    backgroundColor: 'rgba(239, 68, 68, 0.18)',
+    borderColor: 'rgba(239, 68, 68, 0.28)'
   },
   actionCount: {
     color: '#fff',
@@ -1269,6 +1487,9 @@ const styles = StyleSheet.create({
   commentTime: {
     color: '#64748b',
     fontSize: 11
+  },
+  pendingCommentTime: {
+    color: '#a78bfa'
   },
   commentContent: {
     color: '#e2e8f0',
@@ -1452,73 +1673,6 @@ const styles = StyleSheet.create({
     color: '#fecaca',
     fontSize: 12,
     fontWeight: '600'
-  },
-  uploadProgressOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    zIndex: 100,
-    backgroundColor: 'rgba(3, 7, 18, 0.78)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingHorizontal: 28
-  },
-  uploadProgressCard: {
-    width: '100%',
-    maxWidth: 360,
-    alignItems: 'center',
-    paddingHorizontal: 26,
-    paddingVertical: 30,
-    borderRadius: 26,
-    backgroundColor: 'rgba(15, 23, 42, 0.96)',
-    borderWidth: 1,
-    borderColor: 'rgba(148, 163, 184, 0.22)'
-  },
-  uploadProgressIcon: {
-    width: 58,
-    height: 58,
-    borderRadius: 29,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(34, 211, 238, 0.12)',
-    marginBottom: 18
-  },
-  uploadProgressTitle: {
-    color: '#f8fafc',
-    fontSize: 19,
-    fontWeight: '800',
-    textAlign: 'center'
-  },
-  uploadProgressSubtitle: {
-    color: '#94a3b8',
-    fontSize: 13,
-    lineHeight: 19,
-    textAlign: 'center',
-    marginTop: 7
-  },
-  uploadProgressPercent: {
-    color: '#e0f2fe',
-    fontSize: 34,
-    fontWeight: '800',
-    fontVariant: ['tabular-nums'],
-    marginTop: 24,
-    marginBottom: 14
-  },
-  uploadProgressTrack: {
-    width: '100%',
-    height: 8,
-    borderRadius: 4,
-    overflow: 'hidden',
-    backgroundColor: 'rgba(148, 163, 184, 0.2)'
-  },
-  uploadProgressFill: {
-    height: '100%',
-    borderRadius: 4,
-    backgroundColor: '#22d3ee'
-  },
-  uploadProgressFootnote: {
-    color: '#64748b',
-    fontSize: 11,
-    fontWeight: '600',
-    marginTop: 15
   },
   publishSuccessBackdrop: {
     flex: 1,
@@ -1705,9 +1859,12 @@ const styles = StyleSheet.create({
     fontWeight: '700'
   },
   centerPlayOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    justifyContent: 'center',
-    alignItems: 'center'
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    height: 82,
+    alignItems: 'center',
+    justifyContent: 'center'
   },
   playIconCircle: {
     width: 82,
