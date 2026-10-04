@@ -15,6 +15,7 @@ model PmcUser {
   scholarNo     String  @map("scholar_no")
   phone         String?
   data          Json    @db.JsonB
+  reelLikes     PmcReelLike[]
 
   @@index([phone], map: "pmc_users_phone_idx")
   @@map("pmc_users")
@@ -25,8 +26,35 @@ model PmcReel {
   creatorId String?  @map("creator_id")
   createdAt DateTime @map("created_at") @db.Timestamptz(6)
   data      Json     @db.JsonB
+  likes     PmcReelLike[]
+  comments  PmcReelComment[]
 
   @@index([createdAt(sort: Desc)], map: "pmc_reels_created_at_idx")
   @@index([creatorId], map: "pmc_reels_creator_id_idx")
   @@map("pmc_reels")
+}
+
+model PmcReelLike {
+  reelId    String   @map("reel_id")
+  userId    String   @map("user_id")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  reel      PmcReel  @relation(fields: [reelId], references: [id], onDelete: Cascade)
+  user      PmcUser  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([reelId, userId])
+  @@index([userId], map: "pmc_reel_likes_user_id_idx")
+  @@map("pmc_reel_likes")
+}
+
+model PmcReelComment {
+  id        String   @id
+  reelId    String   @map("reel_id")
+  user      String
+  userYear  String   @map("user_year")
+  text      String
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  reel      PmcReel  @relation(fields: [reelId], references: [id], onDelete: Cascade)
+
+  @@index([reelId, createdAt(sort: Desc)], map: "pmc_reel_comments_reel_id_created_at_idx")
+  @@map("pmc_reel_comments")
 }

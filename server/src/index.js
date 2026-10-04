@@ -395,7 +395,8 @@ app.get('/api/reels', async (req, res) => {
   try {
     const host = req.get('host');
     const protocol = req.protocol;
-    const rawReels = await db.getReels();
+    const userId = typeof req.query.userId === 'string' ? req.query.userId : undefined;
+    const rawReels = await db.getReels(userId);
     const reels = await Promise.all(rawReels.map(async (r) => {
       if (r.videoStorageKey) {
         return { ...r, videoUrl: await b2Storage.getVideoUrl(r.videoStorageKey) };
@@ -417,6 +418,9 @@ app.get('/api/reels', async (req, res) => {
 // 8. UPLOAD REEL TO CONFIGURED STORAGE
 app.post('/api/reels/upload', (req, res) => {
   if (process.env.NODE_ENV === 'production' && !b2Storage.isConfigured()) {
+    console.error(
+      `[Leela] Rejecting reel upload: missing B2 environment variables: ${b2Storage.getMissingConfig().join(', ')}`
+    );
     return res.status(503).json({
       success: false,
       message: 'Reel storage is not configured. Please contact the app administrator.'
@@ -537,7 +541,14 @@ app.post('/api/reels/upload', (req, res) => {
 // 8. TOGGLE LIKE ON REEL
 app.post('/api/reels/:id/like', async (req, res) => {
   try {
-    const updatedReel = await db.toggleLike(req.params.id);
+    const userId = typeof req.body?.userId === 'string' ? req.body.userId.trim() : '';
+    if (!userId) {
+      return res.status(400).json({ success: false, message: 'A user ID is required to like a reel.' });
+    }
+    if (!(await db.findUserById(userId))) {
+      return res.status(404).json({ success: false, message: 'User account not found.' });
+    }
+    const updatedReel = await db.toggleLike(req.params.id, userId);
     if (!updatedReel) {
       return res.status(404).json({ success: false, message: 'Reel not found.' });
     }
@@ -551,15 +562,20 @@ app.post('/api/reels/:id/like', async (req, res) => {
 // 9. POST COMMENT ON REEL
 app.post('/api/reels/:id/comments', async (req, res) => {
   try {
-    const { user, text, userYear } = req.body;
-    if (!text) {
+    const { user, text, userYear } = req.body || {};
+    const cleanText = typeof text === 'string' ? text.trim() : '';
+    if (!cleanText) {
       return res.status(400).json({ success: false, message: 'Comment text is required.' });
     }
-    const comment = await db.addComment(req.params.id, user, text, userYear);
+    if (cleanText.length > 1000) {
+      return res.status(400).json({ success: false, message: 'Comments cannot exceed 1,000 characters.' });
+    }
+    const comment = await db.addComment(req.params.id, user, cleanText, userYear);
     if (!comment) {
       return res.status(404).json({ success: false, message: 'Reel not found.' });
     }
-    res.json({ success: true, data: comment });
+    const commentsCount = await db.countReelComments(req.params.id);
+    res.json({ success: true, data: comment, commentsCount });
   } catch (error) {
     console.error('Reel comment error:', error);
     res.status(500).json({ success: false, message: 'Could not save reel comment.' });

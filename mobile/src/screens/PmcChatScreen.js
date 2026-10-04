@@ -20,6 +20,14 @@ import { Ionicons } from '@expo/vector-icons';
 import CoupleLogo from '../components/CoupleLogo';
 import { getSocketUrl } from '../config';
 
+const WAITING_STATUSES = [
+  'Scanning Piya Milan Chauraha...',
+  'Finding someone online across campus (Boy or Girl)...',
+  'Checking Hostels 1-10 & SAC...',
+  'Matching with a random student...',
+  'Connecting your anonymous heartbeat...'
+];
+
 const formatYearShort = (val) => {
   if (!val) return '1st';
   const str = String(val).toLowerCase();
@@ -44,6 +52,7 @@ export default function PmcChatScreen({ serverHost, currentUser, onActiveChatCha
   const [isPartnerTyping, setIsPartnerTyping] = useState(false);
   const [onlineCount, setOnlineCount] = useState(8);
   const [fullImageModal, setFullImageModal] = useState(null);
+  const [waitingStatusIndex, setWaitingStatusIndex] = useState(0);
 
   const flatListRef = useRef(null);
   const typingTimeoutRef = useRef(null);
@@ -199,6 +208,14 @@ export default function PmcChatScreen({ serverHost, currentUser, onActiveChatCha
       pulse.start();
       return () => pulse.stop();
     }
+  }, [chatState]);
+
+  useEffect(() => {
+    if (chatState !== 'waiting') return undefined;
+    const interval = setInterval(() => {
+      setWaitingStatusIndex((prev) => (prev + 1) % WAITING_STATUSES.length);
+    }, 900);
+    return () => clearInterval(interval);
   }, [chatState]);
 
   // Keep parent updated on active chat status
@@ -454,25 +471,6 @@ export default function PmcChatScreen({ serverHost, currentUser, onActiveChatCha
     );
   }
 
-  // Cycling waiting radar status messages
-  const [waitingStatusIndex, setWaitingStatusIndex] = useState(0);
-  const waitingStatuses = [
-    'Scanning Piya Milan Chauraha...',
-    'Finding someone online across campus (Boy or Girl)...',
-    'Checking Hostels 1-10 & SAC...',
-    'Matching with a random student...',
-    'Connecting your anonymous heartbeat...'
-  ];
-
-  useEffect(() => {
-    if (chatState === 'waiting') {
-      const interval = setInterval(() => {
-        setWaitingStatusIndex((prev) => (prev + 1) % waitingStatuses.length);
-      }, 900);
-      return () => clearInterval(interval);
-    }
-  }, [chatState]);
-
   // ---------------- RENDER WAITING STATE (CONNECTING TO PIYA + PULSING PINK HEART) ----------------
   if (chatState === 'waiting') {
     return (
@@ -497,7 +495,7 @@ export default function PmcChatScreen({ serverHost, currentUser, onActiveChatCha
 
           <Text style={styles.waitingTitle}>Connecting to Piya</Text>
           <Text style={styles.waitingTagline}>
-            {waitingStatuses[waitingStatusIndex]}
+            {WAITING_STATUSES[waitingStatusIndex]}
           </Text>
 
           <View style={styles.randomIndicatorRow}>

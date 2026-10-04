@@ -100,6 +100,12 @@ class PrismaDB {
     return user?.data || null;
   }
 
+  async findUserById(id) {
+    if (!id) return null;
+    const user = await this.client.pmcUser.findUnique({ where: { id } });
+    return user?.data || null;
+  }
+
   async registerVerifiedUser({
     fullName,
     phone,
@@ -222,12 +228,28 @@ class PrismaDB {
     });
   }
 
-  async getReels() {
+  async getReels(userId) {
     const reels = await this.client.pmcReel.findMany({
       orderBy: { createdAt: 'desc' },
-      select: { data: true }
+      include: {
+        _count: { select: { likes: true, comments: true } },
+        likes: userId ? { where: { userId }, select: { userId: true } } : false,
+        comments: { orderBy: { createdAt: 'desc' } }
+      }
     });
-    return reels.map(({ data }) => data);
+    return reels.map(({ data, _count, likes, comments }) => ({
+      ...data,
+      likesCount: _count.likes,
+      commentsCount: _count.comments,
+      isLiked: (likes || []).length > 0,
+      comments: comments.map((comment) => ({
+        id: comment.id,
+        user: comment.user,
+        userYear: comment.userYear,
+        text: comment.text,
+        time: 'Just now'
+      }))
+    }));
   }
 
   async addReel({
@@ -274,41 +296,54 @@ class PrismaDB {
     return newReel;
   }
 
-  async toggleLike(reelId) {
+  async toggleLike(reelId, userId) {
     return this.client.$transaction(async (transaction) => {
-      const record = await transaction.pmcReel.findUnique({ where: { id: reelId } });
-      if (!record) return null;
-      const reel = record.data;
-      reel.isLiked = !reel.isLiked;
-      reel.likesCount = Math.max(0, (Number(reel.likesCount) || 0) + (reel.isLiked ? 1 : -1));
-      await transaction.pmcReel.update({
-        where: { id: reelId },
-        data: { data: reel }
+      const reels = await transaction.$queryRaw`
+        SELECT "id" FROM "pmc_reels" WHERE "id" = ${reelId} FOR UPDATE
+      `;
+      if (reels.length === 0) return null;
+      const existing = await transaction.pmcReelLike.findUnique({
+        where: { reelId_userId: { reelId, userId } }
       });
-      return reel;
+      if (existing) {
+        await transaction.pmcReelLike.delete({
+          where: { reelId_userId: { reelId, userId } }
+        });
+      } else {
+        await transaction.pmcReelLike.create({ data: { reelId, userId } });
+      }
+      const likesCount = await transaction.pmcReelLike.count({ where: { reelId } });
+      return { isLiked: !existing, likesCount };
     });
   }
 
   async addComment(reelId, user, text, userYear) {
-    return this.client.$transaction(async (transaction) => {
-      const record = await transaction.pmcReel.findUnique({ where: { id: reelId } });
-      if (!record) return null;
-      const reel = record.data;
-      const comment = {
-        id: `c_${Date.now()}`,
-        user: user || 'Anonymous Student',
-        userYear: userYear || 'Student',
-        text,
-        time: 'Just now'
-      };
-      reel.comments = [comment, ...(reel.comments || [])];
-      reel.commentsCount = reel.comments.length;
-      await transaction.pmcReel.update({
-        where: { id: reelId },
-        data: { data: reel }
+    const comment = {
+      id: `c_${uuidv4()}`,
+      user: user || 'Anonymous Student',
+      userYear: userYear || 'Student',
+      text,
+      time: 'Just now'
+    };
+    try {
+      await this.client.pmcReelComment.create({
+        data: {
+          id: comment.id,
+          reelId,
+          user: comment.user,
+          userYear: comment.userYear,
+          text: comment.text
+        }
       });
-      return comment;
-    });
+    } catch (error) {
+      if (error.code === 'P2003' || error.code === 'P2025') return null;
+      throw error;
+    }
+    return comment;
+  }
+
+  async countReelComments(reelId) {
+    return this.client.pmcReelComment.count({ where: { reelId } });
   }
 }
 

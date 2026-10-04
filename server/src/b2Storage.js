@@ -34,13 +34,17 @@ function getConfig() {
 }
 
 function isConfigured() {
-  return Boolean(
-    process.env.B2_BUCKET_NAME &&
-    process.env.B2_ENDPOINT &&
-    process.env.B2_REGION &&
-    process.env.B2_KEY_ID &&
-    process.env.B2_APPLICATION_KEY
-  );
+  return getMissingConfig().length === 0;
+}
+
+function getMissingConfig() {
+  return [
+    'B2_BUCKET_NAME',
+    'B2_ENDPOINT',
+    'B2_REGION',
+    'B2_KEY_ID',
+    'B2_APPLICATION_KEY'
+  ].filter((key) => !process.env[key]);
 }
 
 async function uploadVideo(filePath, contentType = 'video/mp4') {
@@ -78,4 +82,4 @@ async function deleteVideo(key) {
   await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
 }
 
-module.exports = { deleteVideo, getVideoUrl, isConfigured, uploadVideo };
+module.exports = { deleteVideo, getMissingConfig, getVideoUrl, isConfigured, uploadVideo };

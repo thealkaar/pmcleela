@@ -8,6 +8,7 @@ import {
   ScrollView,
   Image,
   Alert,
+  Modal,
   KeyboardAvoidingView,
   Platform,
   ActivityIndicator
@@ -58,6 +59,7 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
   const [otpCode, setOtpCode] = useState('');
   const [otpTimer, setOtpTimer] = useState(60);
   const [canResend, setCanResend] = useState(false);
+  const [otpSentVisible, setOtpSentVisible] = useState(false);
 
   // Timer countdown for OTP
   useEffect(() => {
@@ -184,7 +186,7 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
         setOtpCode('');
         setOtpTimer(60);
         setCanResend(false);
-        Alert.alert('OTP Sent', `Verification code sent to ${email.trim()}.\nPlease check your inbox/spam.`);
+        setOtpSentVisible(true);
       } else {
         Alert.alert('Notice', data.message || 'Could not send verification OTP.');
       }
@@ -667,6 +669,39 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
           </View>
         )}
       </ScrollView>
+
+      <Modal
+        visible={otpSentVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setOtpSentVisible(false)}
+      >
+        <View style={styles.successModalBackdrop}>
+          <View style={styles.successModalCard}>
+            <View style={styles.successModalIcon}>
+              <Ionicons name="mail-open" size={30} color="#f9a8d4" />
+            </View>
+            <Text style={styles.successModalEyebrow}>EMAIL VERIFICATION</Text>
+            <Text style={styles.successModalTitle}>Code on its way</Text>
+            <Text style={styles.successModalMessage}>
+              We sent a one-time code to your MANIT inbox.
+            </Text>
+            <View style={styles.successModalEmailRow}>
+              <Ionicons name="mail-outline" size={17} color="#f9a8d4" />
+              <Text style={styles.successModalEmail} numberOfLines={1}>{email.trim()}</Text>
+            </View>
+            <Text style={styles.successModalHint}>If it’s not there, check your spam folder.</Text>
+            <TouchableOpacity
+              style={styles.successModalButton}
+              onPress={() => setOtpSentVisible(false)}
+              activeOpacity={0.85}
+            >
+              <Text style={styles.successModalButtonText}>Enter verification code</Text>
+              <Ionicons name="arrow-forward" size={18} color="#ffffff" />
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </KeyboardAvoidingView>
   );
 }
@@ -1057,5 +1092,95 @@ const styles = StyleSheet.create({
   backLinkText: {
     color: '#94a3b8',
     fontSize: 12
+  },
+  successModalBackdrop: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 28,
+    backgroundColor: 'rgba(3, 7, 18, 0.78)'
+  },
+  successModalCard: {
+    width: '100%',
+    maxWidth: 360,
+    alignItems: 'center',
+    paddingHorizontal: 24,
+    paddingVertical: 28,
+    borderRadius: 26,
+    backgroundColor: '#111422',
+    borderWidth: 1,
+    borderColor: 'rgba(236, 72, 153, 0.28)'
+  },
+  successModalIcon: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(236, 72, 153, 0.15)',
+    borderWidth: 1,
+    borderColor: 'rgba(236, 72, 153, 0.24)',
+    marginBottom: 18
+  },
+  successModalEyebrow: {
+    color: '#f472b6',
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 1.5
+  },
+  successModalTitle: {
+    color: '#f8fafc',
+    fontSize: 22,
+    fontWeight: '800',
+    marginTop: 7
+  },
+  successModalMessage: {
+    color: '#94a3b8',
+    fontSize: 13,
+    lineHeight: 19,
+    textAlign: 'center',
+    marginTop: 8
+  },
+  successModalEmailRow: {
+    width: '100%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 9,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    marginTop: 20,
+    borderRadius: 14,
+    backgroundColor: 'rgba(236, 72, 153, 0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(236, 72, 153, 0.2)'
+  },
+  successModalEmail: {
+    flexShrink: 1,
+    color: '#fce7f3',
+    fontSize: 13,
+    fontWeight: '700'
+  },
+  successModalHint: {
+    color: '#64748b',
+    fontSize: 11,
+    textAlign: 'center',
+    marginTop: 12
+  },
+  successModalButton: {
+    width: '100%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 9,
+    paddingVertical: 14,
+    marginTop: 22,
+    borderRadius: 15,
+    backgroundColor: '#db2777'
+  },
+  successModalButtonText: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '800'
   }
 });

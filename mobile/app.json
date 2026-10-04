@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "mobile",
+    "name": "PMC Leela",
     "slug": "mobile",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -10,6 +10,7 @@
       "supportsTablet": true
     },
     "android": {
+      "package": "com.pmcleela.app",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/android-icon-foreground.png",
@@ -23,6 +24,11 @@
     "plugins": [
       "expo-font",
       "expo-video"
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "517c5f2e-6b86-4e89-887a-f61dbc80bbb1"
+      }
+    }
   }
 }

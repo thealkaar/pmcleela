@@ -134,6 +134,12 @@ class LocalDB {
     );
   }
 
+  findUserById(id) {
+    if (!id) return null;
+    this.refreshUsers();
+    return this.users.find(user => user.id === id);
+  }
+
   /**
    * Save OTP for a student email with 10 minute expiry
    */
@@ -277,7 +283,7 @@ class LocalDB {
   }
 
   // --- REELS METHODS ---
-  getReels() {
+  getReels(userId) {
     const now = new Date();
     const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
     const startOfYesterday = startOfToday - 24 * 60 * 60 * 1000;
@@ -289,6 +295,9 @@ class LocalDB {
     const olderReels = [];
 
     this.reels.forEach(reel => {
+      const likedBy = Array.isArray(reel.likedBy) ? reel.likedBy : [];
+      reel.likesCount = likedBy.length;
+      reel.isLiked = Boolean(userId && likedBy.includes(userId));
       const reelTime = new Date(reel.createdAt || Date.now()).getTime();
       if (reelTime >= startOfToday) {
         todayReels.push(reel);
@@ -314,7 +323,7 @@ class LocalDB {
       ...sortBucket(yesterdayReels),
       ...sortBucket(dayBeforeReels),
       ...sortBucket(olderReels)
-    ];
+    ].map(({ likedBy, ...reel }) => reel);
   }
 
   addReel({ creatorId, creatorName, creatorYear, caption, videoUrl, videoStorageKey, audioTitle, tags, trimStart, trimEnd, cropMode }) {
@@ -332,6 +341,7 @@ class LocalDB {
       likesCount: 0,
       commentsCount: 0,
       isLiked: false,
+      likedBy: [],
       audioTitle: audioTitle || 'Original Audio',
       tags: tags || ['#PMC', '#MANIT', '#Leela'],
       comments: [],
@@ -339,23 +349,32 @@ class LocalDB {
     };
     this.reels.unshift(newReel);
     writeJson(REELS_FILE, this.reels);
-    return newReel;
+    const { likedBy, ...publicReel } = newReel;
+    return publicReel;
   }
 
-  toggleLike(reelId) {
+  toggleLike(reelId, userId) {
     const reel = this.reels.find(r => r.id === reelId);
     if (!reel) return null;
-    reel.isLiked = !reel.isLiked;
-    reel.likesCount += reel.isLiked ? 1 : -1;
+    if (!userId) return null;
+    reel.likedBy = Array.isArray(reel.likedBy) ? reel.likedBy : [];
+    const existingIndex = reel.likedBy.indexOf(userId);
+    if (existingIndex >= 0) {
+      reel.likedBy.splice(existingIndex, 1);
+    } else {
+      reel.likedBy.push(userId);
+    }
+    reel.likesCount = reel.likedBy.length;
+    reel.isLiked = existingIndex < 0;
     writeJson(REELS_FILE, this.reels);
-    return reel;
+    return { isLiked: reel.isLiked, likesCount: reel.likesCount };
   }
 
   addComment(reelId, user, text, userYear) {
     const reel = this.reels.find(r => r.id === reelId);
     if (!reel) return null;
     const comment = {
-      id: `c_${Date.now()}`,
+      id: `c_${uuidv4()}`,
       user: user || 'Anonymous Student',
       userYear: userYear || 'Student',
       text,
@@ -366,6 +385,11 @@ class LocalDB {
     reel.commentsCount = reel.comments.length;
     writeJson(REELS_FILE, this.reels);
     return comment;
+  }
+
+  countReelComments(reelId) {
+    const reel = this.reels.find(item => item.id === reelId);
+    return reel ? (reel.comments || []).length : 0;
   }
 }
 
