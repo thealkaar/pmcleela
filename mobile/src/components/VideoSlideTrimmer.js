@@ -23,7 +23,6 @@ const TIMELINE_PADDING = 16;
 const TIMELINE_WIDTH = SCREEN_WIDTH - (TIMELINE_PADDING * 2);
 const HANDLE_WIDTH = 18;
 const TIMELINE_HEIGHT = 50;
-const MAX_CLIP_DURATION_SECONDS = 20;
 
 export default function VideoSlideTrimmer({
   videoUri,
@@ -111,10 +110,7 @@ export default function VideoSlideTrimmer({
         let newStart = leftPanResponder.startX + deltaSec;
         const minClipDuration = Math.min(1.5, dur);
         
-        newStart = Math.max(
-          Math.max(0, endVal - MAX_CLIP_DURATION_SECONDS),
-          Math.min(newStart, endVal - minClipDuration)
-        );
+        newStart = Math.max(0, Math.min(newStart, endVal - minClipDuration));
         newStart = Math.round(newStart * 10) / 10;
 
         if (onTrimChange) {
@@ -147,10 +143,7 @@ export default function VideoSlideTrimmer({
         let newEnd = rightPanResponder.startEnd + deltaSec;
         const minClipDuration = Math.min(1.5, dur);
 
-        newEnd = Math.min(
-          startVal + MAX_CLIP_DURATION_SECONDS,
-          Math.max(startVal + minClipDuration, Math.min(newEnd, dur))
-        );
+        newEnd = Math.max(startVal + minClipDuration, Math.min(newEnd, dur));
         newEnd = Math.round(newEnd * 10) / 10;
 
         if (onTrimChange) {
@@ -281,8 +274,8 @@ export default function VideoSlideTrimmer({
 
         <View style={styles.durationBadgePill}>
           <Text style={styles.durationText}>
-            {formatTime(currentDurationSec)} / 0:20 max • 100 MB max
-            {fileSizeMB ? ` • ${fileSizeMB} MB` : ''}
+            {formatTime(currentDurationSec)}
+            {fileSizeMB ? ` • ${fileSizeMB} MB` : ` • ${formatTime(totalDuration)} total`}
           </Text>
         </View>
       </View>
