@@ -5,6 +5,10 @@ const { v4: uuidv4 } = require('uuid');
 const DATA_DIR = path.join(__dirname, '../data');
 const USERS_FILE = path.join(DATA_DIR, 'users.json');
 const REELS_FILE = path.join(DATA_DIR, 'reels.json');
+const REPORTS_FILE = path.join(DATA_DIR, 'reel-reports.json');
+const PUSH_TOKENS_FILE = path.join(DATA_DIR, 'push-tokens.json');
+const ANNOUNCEMENTS_FILE = path.join(DATA_DIR, 'announcements.json');
+const APP_RELEASES_FILE = path.join(DATA_DIR, 'app-releases.json');
 
 function readJson(file, defaultValue = []) {
   try {
@@ -33,6 +37,10 @@ class LocalDB {
     }
     this.users = useLocalFiles ? readJson(USERS_FILE, []) : [];
     this.reels = useLocalFiles ? readJson(REELS_FILE, []) : [];
+    this.reports = useLocalFiles ? readJson(REPORTS_FILE, []) : [];
+    this.pushTokens = useLocalFiles ? readJson(PUSH_TOKENS_FILE, []) : [];
+    this.announcements = useLocalFiles ? readJson(ANNOUNCEMENTS_FILE, []) : [];
+    this.appReleases = useLocalFiles ? readJson(APP_RELEASES_FILE, []) : [];
     // In-memory OTP storage: email -> { otp, studentData, expiresAt }
     this.otpStore = new Map();
   }
@@ -138,6 +146,10 @@ class LocalDB {
     if (!id) return null;
     this.refreshUsers();
     return this.users.find(user => user.id === id);
+  }
+
+  getUsers() {
+    return this.refreshUsers();
   }
 
   /**
@@ -257,6 +269,10 @@ class LocalDB {
     // Remove user from users list
     this.users.splice(userIndex, 1);
     writeJson(USERS_FILE, this.users);
+    this.reports = this.reports.filter(report => report.reporterId !== userId);
+    writeJson(REPORTS_FILE, this.reports);
+    this.pushTokens = this.pushTokens.filter(item => item.userId !== userId);
+    writeJson(PUSH_TOKENS_FILE, this.pushTokens);
 
     // Find and remove all reels created by this user
     const deletedReelFiles = [];
@@ -390,6 +406,119 @@ class LocalDB {
   countReelComments(reelId) {
     const reel = this.reels.find(item => item.id === reelId);
     return reel ? (reel.comments || []).length : 0;
+  }
+
+  getReel(reelId) {
+    return this.reels.find(reel => reel.id === reelId) || null;
+  }
+
+  deleteReel(reelId) {
+    const index = this.reels.findIndex(reel => reel.id === reelId);
+    if (index < 0) return null;
+    const [deletedReel] = this.reels.splice(index, 1);
+    writeJson(REELS_FILE, this.reels);
+    this.reports = this.reports.filter(report => report.reelId !== reelId);
+    writeJson(REPORTS_FILE, this.reports);
+    const deletedReelFiles = [];
+    if (deletedReel.videoUrl && deletedReel.videoUrl.includes('/uploads/')) {
+      const filename = deletedReel.videoUrl.split('/uploads/').pop();
+      if (filename) deletedReelFiles.push(filename);
+    }
+    return {
+      deletedReel,
+      deletedReelFiles,
+      deletedReelStorageKeys: deletedReel.videoStorageKey ? [deletedReel.videoStorageKey] : []
+    };
+  }
+
+  getReelReports({ status } = {}) {
+    return this.reports
+      .filter(report => !status || report.status === status)
+      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+      .map(report => ({
+        ...report,
+        reel: this.getReel(report.reelId),
+        reporter: this.findUserById(report.reporterId)
+      }));
+  }
+
+  addReelReport(reelId, reporterId, reason) {
+    if (!this.getReel(reelId) || !this.findUserById(reporterId)) return null;
+    if (this.reports.some(report => report.reelId === reelId && report.reporterId === reporterId)) {
+      return { duplicate: true };
+    }
+    const report = {
+      id: `report_${uuidv4()}`,
+      reelId,
+      reporterId,
+      reason,
+      status: 'pending',
+      createdAt: new Date().toISOString(),
+      reviewedAt: null
+    };
+    this.reports.unshift(report);
+    writeJson(REPORTS_FILE, this.reports);
+    return report;
+  }
+
+  updateReelReportStatus(reportId, status) {
+    const report = this.reports.find(item => item.id === reportId);
+    if (!report) return null;
+    report.status = status;
+    report.reviewedAt = new Date().toISOString();
+    writeJson(REPORTS_FILE, this.reports);
+    return report;
+  }
+
+  registerPushToken(userId, token, platform) {
+    if (!this.findUserById(userId)) return null;
+    this.pushTokens = this.pushTokens.filter(item => item.token !== token);
+    const registration = { token, userId, platform, updatedAt: new Date().toISOString() };
+    this.pushTokens.push(registration);
+    writeJson(PUSH_TOKENS_FILE, this.pushTokens);
+    return registration;
+  }
+
+  getPushTokens() {
+    return this.pushTokens;
+  }
+
+  removePushTokens(tokens) {
+    const removed = new Set(tokens);
+    this.pushTokens = this.pushTokens.filter(item => !removed.has(item.token));
+    writeJson(PUSH_TOKENS_FILE, this.pushTokens);
+  }
+
+  addAnnouncement({ id, title, message }) {
+    const announcement = { id, title, message, createdAt: new Date().toISOString() };
+    this.announcements.unshift(announcement);
+    writeJson(ANNOUNCEMENTS_FILE, this.announcements);
+    return announcement;
+  }
+
+  getAnnouncements(limit = 20) {
+    return this.announcements.slice(0, limit);
+  }
+
+  addAppRelease(release) {
+    if (this.appReleases.some(item => item.versionCode === release.versionCode)) {
+      const error = new Error('This Android version code has already been published.');
+      error.code = 'DUPLICATE_VERSION_CODE';
+      throw error;
+    }
+    const saved = { ...release, createdAt: new Date().toISOString() };
+    this.appReleases.push(saved);
+    this.appReleases.sort((a, b) => b.versionCode - a.versionCode);
+    writeJson(APP_RELEASES_FILE, this.appReleases);
+    return saved;
+  }
+
+  getAppRelease() {
+    return this.appReleases[0] || null;
+  }
+
+  getAppReleases(limit = 10) {
+    return this.appReleases.slice(0, limit);
   }
 }
 

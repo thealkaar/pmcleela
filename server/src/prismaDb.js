@@ -106,6 +106,11 @@ class PrismaDB {
     return user?.data || null;
   }
 
+  async getUsers() {
+    const users = await this.client.pmcUser.findMany({ orderBy: { email: 'asc' } });
+    return users.map(({ data }) => data);
+  }
+
   async registerVerifiedUser({
     fullName,
     phone,
@@ -228,6 +233,51 @@ class PrismaDB {
     });
   }
 
+  async registerPushToken(userId, token, platform) {
+    const user = await this.client.pmcUser.findUnique({ where: { id: userId }, select: { id: true } });
+    if (!user) return null;
+    return this.client.pmcPushToken.upsert({
+      where: { token },
+      create: { token, userId, platform },
+      update: { userId, platform }
+    });
+  }
+
+  async getPushTokens() {
+    return this.client.pmcPushToken.findMany({ select: { token: true, userId: true } });
+  }
+
+  async removePushTokens(tokens) {
+    if (!tokens.length) return;
+    await this.client.pmcPushToken.deleteMany({ where: { token: { in: tokens } } });
+  }
+
+  async addAnnouncement({ id, title, message }) {
+    return this.client.pmcAnnouncement.create({ data: { id, title, message } });
+  }
+
+  async getAnnouncements(limit = 20) {
+    return this.client.pmcAnnouncement.findMany({
+      orderBy: { createdAt: 'desc' },
+      take: limit
+    });
+  }
+
+  async addAppRelease(release) {
+    return this.client.pmcAppRelease.create({ data: release });
+  }
+
+  async getAppRelease() {
+    return this.client.pmcAppRelease.findFirst({ orderBy: { versionCode: 'desc' } });
+  }
+
+  async getAppReleases(limit = 10) {
+    return this.client.pmcAppRelease.findMany({
+      orderBy: { versionCode: 'desc' },
+      take: limit
+    });
+  }
+
   async getReels(userId) {
     const reels = await this.client.pmcReel.findMany({
       orderBy: { createdAt: 'desc' },
@@ -250,6 +300,72 @@ class PrismaDB {
         time: 'Just now'
       }))
     }));
+  }
+
+  async getReel(reelId) {
+    const reel = await this.client.pmcReel.findUnique({ where: { id: reelId } });
+    return reel?.data || null;
+  }
+
+  async deleteReel(reelId) {
+    return this.client.$transaction(async (transaction) => {
+      const reel = await transaction.pmcReel.findUnique({ where: { id: reelId } });
+      if (!reel) return null;
+      await transaction.pmcReel.delete({ where: { id: reelId } });
+      const deletedReelFiles = [];
+      if (reel.data.videoUrl && reel.data.videoUrl.includes('/uploads/')) {
+        const filename = reel.data.videoUrl.split('/uploads/').pop();
+        if (filename) deletedReelFiles.push(filename);
+      }
+      return {
+        deletedReel: reel.data,
+        deletedReelFiles,
+        deletedReelStorageKeys: reel.data.videoStorageKey ? [reel.data.videoStorageKey] : []
+      };
+    });
+  }
+
+  async getReelReports({ status } = {}) {
+    const reports = await this.client.pmcReelReport.findMany({
+      where: status ? { status } : undefined,
+      orderBy: { createdAt: 'desc' },
+      include: { reel: true, reporter: true }
+    });
+    return reports.map(({ reel, reporter, ...report }) => ({
+      ...report,
+      reel: reel.data,
+      reporter: reporter.data
+    }));
+  }
+
+  async addReelReport(reelId, reporterId, reason) {
+    try {
+      const report = await this.client.pmcReelReport.create({
+        data: { id: `report_${uuidv4()}`, reelId, reporterId, reason },
+        include: { reel: true, reporter: true }
+      });
+      return {
+        ...report,
+        reel: report.reel.data,
+        reporter: report.reporter.data
+      };
+    } catch (error) {
+      if (error.code === 'P2002') return { duplicate: true };
+      if (error.code === 'P2003' || error.code === 'P2025') return null;
+      throw error;
+    }
+  }
+
+  async updateReelReportStatus(reportId, status) {
+    try {
+      return await this.client.pmcReelReport.update({
+        where: { id: reportId },
+        data: { status, reviewedAt: new Date() }
+      });
+    } catch (error) {
+      if (error.code === 'P2025') return null;
+      throw error;
+    }
   }
 
   async addReel({

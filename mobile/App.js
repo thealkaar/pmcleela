@@ -1,15 +1,29 @@
 import React, { useState, useEffect } from 'react';
-import { StyleSheet, View, Text, TouchableOpacity, SafeAreaView, Platform, ActivityIndicator, Animated, Easing } from 'react-native';
+import { StyleSheet, View, Text, TouchableOpacity, Platform, ActivityIndicator, Animated, Easing } from 'react-native';
+import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Device from 'expo-device';
+import Constants from 'expo-constants';
+import * as Notifications from 'expo-notifications';
 import { Ionicons } from '@expo/vector-icons';
 import LoginScreen from './src/screens/LoginScreen';
 import PmcChatScreen from './src/screens/PmcChatScreen';
 import LeelaReelsScreen from './src/screens/LeelaReelsScreen';
 import MeProfileScreen from './src/screens/MeProfileScreen';
-import { DEFAULT_HOST } from './src/config';
+import { DEFAULT_HOST, getBaseUrl } from './src/config';
 
 const USER_STORAGE_KEY = '@pmc_leela_current_user';
+const PUSH_TOKEN_STORAGE_KEY = '@pmc_leela_push_token';
+
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowBanner: true,
+    shouldShowList: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false
+  })
+});
 
 const deriveYear = (user) => {
   if (!user) return user;
@@ -32,6 +46,14 @@ const deriveYear = (user) => {
 };
 
 export default function App() {
+  return (
+    <SafeAreaProvider>
+      <AppContent />
+    </SafeAreaProvider>
+  );
+}
+
+function AppContent() {
   const [currentUser, setCurrentUser] = useState(null);
   const [isInitializing, setIsInitializing] = useState(true);
   const [currentTab, setCurrentTab] = useState('pmc'); // 'pmc' | 'leela' | 'me'
@@ -40,6 +62,13 @@ export default function App() {
   const tabTransitionOpacity = React.useRef(new Animated.Value(1)).current;
   const tabTransitionId = React.useRef(0);
   const interfaceTransitionOpacity = React.useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    const responseListener = Notifications.addNotificationResponseReceivedListener(() => {
+      setCurrentTab('me');
+    });
+    return () => responseListener.remove();
+  }, []);
 
   const switchTab = (tab) => {
     if (tab === currentTab) return;
@@ -93,6 +122,54 @@ export default function App() {
     loadSession();
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    async function registerForPushNotifications() {
+      if (!currentUser?.id || Platform.OS === 'web' || !Device.isDevice) return;
+      try {
+        if (Platform.OS === 'android') {
+          await Notifications.setNotificationChannelAsync('announcements', {
+            name: 'PMC announcements',
+            importance: Notifications.AndroidImportance.MAX,
+            vibrationPattern: [0, 250, 250, 250]
+          });
+        }
+
+        let permission = await Notifications.getPermissionsAsync();
+        if (permission.status !== 'granted') {
+          permission = await Notifications.requestPermissionsAsync();
+        }
+        if (permission.status !== 'granted') return;
+
+        const projectId = Constants.easConfig?.projectId || Constants.expoConfig?.extra?.eas?.projectId;
+        if (!projectId) throw new Error('Expo project ID is missing from the app configuration.');
+        const tokenResult = await Notifications.getExpoPushTokenAsync({ projectId });
+        if (cancelled) return;
+
+        await AsyncStorage.setItem(PUSH_TOKEN_STORAGE_KEY, tokenResult.data);
+        const response = await fetch(`${getBaseUrl(serverHost)}/api/push/register`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            userId: currentUser.id,
+            token: tokenResult.data,
+            platform: Platform.OS
+          })
+        });
+        const result = await response.json();
+        if (!response.ok || !result.success) {
+          throw new Error(result.message || `Push registration failed (${response.status}).`);
+        }
+      } catch (error) {
+        console.warn('[Push] Could not register this device:', error.message);
+      }
+    }
+    registerForPushNotifications();
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser?.id, serverHost]);
+
   const handleLoginSuccess = async (user) => {
     const fixedUser = deriveYear(user);
     setCurrentUser(fixedUser);
@@ -104,6 +181,20 @@ export default function App() {
   };
 
   const handleLogout = async () => {
+    AsyncStorage.getItem(PUSH_TOKEN_STORAGE_KEY).then(async (pushToken) => {
+      if (!pushToken) return;
+      try {
+        await fetch(`${getBaseUrl(serverHost)}/api/push/unregister`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token: pushToken })
+        });
+      } catch (error) {
+        console.warn('[Push] Could not unregister this device:', error.message);
+      } finally {
+        await AsyncStorage.removeItem(PUSH_TOKEN_STORAGE_KEY);
+      }
+    }).catch(error => console.warn('[Push] Could not read the saved device token:', error.message));
     setActiveChatPartner(null);
     setCurrentUser(null);
     setCurrentTab('pmc');
@@ -146,7 +237,7 @@ export default function App() {
   if (!currentUser) {
     return (
       <Animated.View style={{ flex: 1, opacity: interfaceTransitionOpacity }}>
-      <SafeAreaView style={styles.safeArea}>
+      <SafeAreaView style={styles.safeArea} edges={Platform.OS === 'android' ? ['bottom'] : ['top', 'bottom']}>
         <StatusBar style="light" />
         <LoginScreen
           serverHost={serverHost}
@@ -159,7 +250,7 @@ export default function App() {
 
   return (
     <Animated.View style={{ flex: 1, opacity: interfaceTransitionOpacity }}>
-    <SafeAreaView style={styles.safeArea}>
+    <SafeAreaView style={styles.safeArea} edges={Platform.OS === 'android' ? ['bottom'] : ['top', 'bottom']}>
       <StatusBar style="light" />
 
       {/* Floating Active Chat Banner if user is browsing Reels or Me while chatting */}
@@ -219,6 +310,7 @@ export default function App() {
             onUpdateCurrentUser={handleUpdateCurrentUser}
             onLogout={handleLogout}
             serverHost={serverHost}
+            isTabActive={currentTab === 'me'}
             onDeleteAccount={handleDeleteAccount}
           />
         </View>

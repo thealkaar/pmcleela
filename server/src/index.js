@@ -4,6 +4,7 @@ const http = require('http');
 const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
+const { randomUUID } = require('crypto');
 const multer = require('multer');
 const { Server } = require('socket.io');
 
@@ -13,6 +14,8 @@ const PrismaDB = require('./prismaDb');
 const { sendOtpEmail } = require('./emailService');
 const { trimAndCropVideo } = require('./videoProcessor');
 const r2Storage = require('./r2Storage');
+const { loginAdmin, requireAdmin } = require('./adminAuth');
+const { sendPushToAll } = require('./pushNotifications');
 
 if (process.env.NODE_ENV === 'production' && !process.env.DATABASE_URL) {
   throw new Error('DATABASE_URL is required in production. Configure the Supabase PostgreSQL connection string.');
@@ -26,6 +29,33 @@ function publicUser(user) {
   if (!user) return user;
   const { password, passwordHash, ...safeUser } = user;
   return safeUser;
+}
+
+async function withPlayableVideoUrl(reel, req) {
+  if (reel.videoStorageKey) {
+    return { ...reel, videoUrl: await r2Storage.getVideoUrl(reel.videoStorageKey) };
+  }
+  let videoUrl = reel.videoUrl;
+  if (videoUrl && videoUrl.includes('/uploads/')) {
+    const filename = videoUrl.split('/uploads/').pop();
+    videoUrl = `${req.protocol}://${req.get('host')}/uploads/${filename}`;
+  }
+  return { ...reel, videoUrl };
+}
+
+async function removeReelFiles(deletion) {
+  for (const key of deletion.deletedReelStorageKeys) {
+    await r2Storage.deleteVideo(key);
+  }
+  for (const filename of deletion.deletedReelFiles) {
+    const safeFilename = path.basename(filename);
+    if (safeFilename !== filename) {
+      throw new Error('Refusing to delete a reel file outside the uploads directory.');
+    }
+    await fs.promises.unlink(path.join(uploadsDir, safeFilename)).catch((error) => {
+      if (error.code !== 'ENOENT') throw error;
+    });
+  }
 }
 
 app.set('trust proxy', 1);
@@ -74,6 +104,25 @@ const upload = multer({
   limits: {
     fileSize: maxUploadBytes,
     fieldSize: 1024 * 1024
+  }
+});
+const appReleaseUploadLimitMb = Number(process.env.MAX_APP_RELEASE_MB || 250);
+if (!Number.isFinite(appReleaseUploadLimitMb) || appReleaseUploadLimitMb <= 0) {
+  throw new Error('MAX_APP_RELEASE_MB must be a positive number.');
+}
+const appReleaseUpload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => cb(null, uploadsDir),
+    filename: (req, file, cb) => cb(null, `pmc_release_${Date.now()}_${randomUUID()}.apk`)
+  }),
+  limits: { fileSize: appReleaseUploadLimitMb * 1024 * 1024, files: 1 },
+  fileFilter: (req, file, cb) => {
+    const isApk = path.extname(file.originalname).toLowerCase() === '.apk';
+    const validType = [
+      'application/vnd.android.package-archive',
+      'application/octet-stream'
+    ].includes(file.mimetype);
+    cb(isApk && validType ? null : new Error('Choose a valid Android .apk file.'), isApk && validType);
   }
 });
 
@@ -143,6 +192,395 @@ io.on('connection', (socket) => {
 });
 
 // ================= REST API ROUTES =================
+
+app.post('/api/admin/login', loginAdmin);
+
+app.get('/api/admin/users', requireAdmin, async (req, res) => {
+  try {
+    const [users, reels] = await Promise.all([db.getUsers(), db.getReels()]);
+    const reelCounts = new Map();
+    for (const reel of reels) {
+      if (reel.creatorId) reelCounts.set(reel.creatorId, (reelCounts.get(reel.creatorId) || 0) + 1);
+    }
+    res.json({
+      success: true,
+      data: users.map(user => ({ ...publicUser(user), reelsCount: reelCounts.get(user.id) || 0 }))
+    });
+  } catch (error) {
+    console.error('[Admin] Failed to list users:', error);
+    res.status(500).json({ success: false, message: 'Could not load user accounts.' });
+  }
+});
+
+app.post('/api/admin/users', requireAdmin, async (req, res) => {
+  try {
+    const { fullName, phone, email, password, gender, hostel, anonymousName, academicYear } = req.body || {};
+    if (
+      typeof fullName !== 'string' ||
+      typeof email !== 'string' ||
+      typeof password !== 'string' ||
+      typeof anonymousName !== 'string' ||
+      password.length < 12
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: 'Full name, MANIT email, campus name, and an initial password of at least 12 characters are required.'
+      });
+    }
+    if (gender !== 'male' && gender !== 'female') {
+      return res.status(400).json({ success: false, message: 'Choose a valid student gender.' });
+    }
+    const user = await db.registerVerifiedUser({
+      fullName,
+      phone: typeof phone === 'string' ? phone : '',
+      email,
+      password,
+      gender,
+      hostel: typeof hostel === 'string' ? hostel : '',
+      anonymousName,
+      academicYear: typeof academicYear === 'string' ? academicYear : ''
+    });
+    console.info(`[Admin] Created student account ${user.id}`);
+    res.status(201).json({ success: true, data: publicUser(user) });
+  } catch (error) {
+    const validationError = /already registered|already taken|Only MANIT student emails|is required/i.test(error.message);
+    console.error('[Admin] Failed to create user:', error.message);
+    res.status(validationError ? 400 : 500).json({
+      success: false,
+      message: validationError ? error.message : 'Could not create the user account.'
+    });
+  }
+});
+
+app.delete('/api/admin/users/:id', requireAdmin, async (req, res) => {
+  try {
+    const reels = (await db.getReels()).filter(reel => reel.creatorId === req.params.id);
+    const deletion = {
+      deletedReelStorageKeys: reels.map(reel => reel.videoStorageKey).filter(Boolean),
+      deletedReelFiles: reels.flatMap(reel => (
+        reel.videoUrl?.includes('/uploads/')
+          ? [reel.videoUrl.split('/uploads/').pop()]
+          : []
+      ))
+    };
+    await removeReelFiles(deletion);
+    const result = await db.deleteUser(req.params.id);
+    if (!result) return res.status(404).json({ success: false, message: 'User not found.' });
+    console.warn(`[Admin] Deleted user account ${req.params.id} and ${reels.length} reels`);
+    res.json({ success: true, deletedReels: reels.length });
+  } catch (error) {
+    console.error(`[Admin] Failed to delete user ${req.params.id}:`, error);
+    res.status(500).json({ success: false, message: 'Could not fully remove this account and its content.' });
+  }
+});
+
+app.get('/api/admin/reels', requireAdmin, async (req, res) => {
+  try {
+    const reels = await db.getReels();
+    const data = await Promise.all(reels.map(reel => withPlayableVideoUrl(reel, req)));
+    res.json({ success: true, data });
+  } catch (error) {
+    console.error('[Admin] Failed to load reels:', error);
+    res.status(500).json({ success: false, message: 'Could not load reel content.' });
+  }
+});
+
+app.delete('/api/admin/reels/:id', requireAdmin, async (req, res) => {
+  try {
+    const reel = await db.getReel(req.params.id);
+    if (!reel) return res.status(404).json({ success: false, message: 'Reel not found.' });
+    const deletion = {
+      deletedReelFiles: reel.videoUrl?.includes('/uploads/')
+        ? [reel.videoUrl.split('/uploads/').pop()]
+        : [],
+      deletedReelStorageKeys: reel.videoStorageKey ? [reel.videoStorageKey] : []
+    };
+    await removeReelFiles(deletion);
+    const result = await db.deleteReel(req.params.id);
+    if (!result) return res.status(404).json({ success: false, message: 'Reel not found.' });
+    console.warn(`[Admin] Deleted reel ${req.params.id} and its stored video`);
+    res.json({ success: true });
+  } catch (error) {
+    console.error(`[Admin] Failed to delete reel ${req.params.id}:`, error);
+    res.status(502).json({
+      success: false,
+      message: 'Could not delete the reel from storage. Reel metadata was kept so deletion can be retried.'
+    });
+  }
+});
+
+app.get('/api/admin/reports', requireAdmin, async (req, res) => {
+  try {
+    const status = typeof req.query.status === 'string' ? req.query.status : undefined;
+    if (status && !['pending', 'resolved', 'dismissed'].includes(status)) {
+      return res.status(400).json({ success: false, message: 'Report status is invalid.' });
+    }
+    const reports = await db.getReelReports({ status });
+    const data = await Promise.all(reports.map(async report => ({
+      ...report,
+      reel: report.reel ? await withPlayableVideoUrl(report.reel, req) : null,
+      reporter: publicUser(report.reporter)
+    })));
+    res.json({ success: true, data });
+  } catch (error) {
+    console.error('[Admin] Failed to load reports:', error);
+    res.status(500).json({ success: false, message: 'Could not load reel reports.' });
+  }
+});
+
+app.patch('/api/admin/reports/:id', requireAdmin, async (req, res) => {
+  try {
+    const { status } = req.body || {};
+    if (!['resolved', 'dismissed'].includes(status)) {
+      return res.status(400).json({ success: false, message: 'Report status must be resolved or dismissed.' });
+    }
+    const report = await db.updateReelReportStatus(req.params.id, status);
+    if (!report) return res.status(404).json({ success: false, message: 'Report not found.' });
+    res.json({ success: true, data: report });
+  } catch (error) {
+    console.error(`[Admin] Failed to update report ${req.params.id}:`, error);
+    res.status(500).json({ success: false, message: 'Could not update report status.' });
+  }
+});
+
+app.get('/api/admin/announcements', requireAdmin, async (req, res) => {
+  try {
+    res.json({ success: true, data: await db.getAnnouncements(20) });
+  } catch (error) {
+    console.error('[Admin] Failed to list announcements:', error);
+    res.status(500).json({ success: false, message: 'Could not load broadcast history.' });
+  }
+});
+
+app.post('/api/admin/announcements', requireAdmin, async (req, res) => {
+  try {
+    const title = typeof req.body?.title === 'string' ? req.body.title.trim() : '';
+    const message = typeof req.body?.message === 'string' ? req.body.message.trim() : '';
+    if (!title || title.length > 80 || !message || message.length > 500) {
+      return res.status(400).json({
+        success: false,
+        message: 'A title (1–80 characters) and message (1–500 characters) are required.'
+      });
+    }
+
+    const announcement = await db.addAnnouncement({
+      id: `announcement_${randomUUID()}`,
+      title,
+      message
+    });
+    let tokens = [];
+    let delivery = { sent: 0, failed: 0, invalidTokens: [], errors: [] };
+    try {
+      tokens = await db.getPushTokens();
+      delivery = await sendPushToAll(tokens, {
+        title,
+        body: message,
+        data: { type: 'announcement', announcementId: announcement.id }
+      });
+      if (delivery.invalidTokens.length) {
+        await db.removePushTokens(delivery.invalidTokens);
+      }
+    } catch (pushError) {
+      delivery.failed = tokens.length;
+      delivery.errors = [pushError.message];
+      console.error('[Push] Announcement was saved, but push delivery could not be completed:', pushError);
+    }
+    console.info(`[Admin] Broadcast ${announcement.id}: ${delivery.sent} sent, ${delivery.failed} failed.`);
+    res.status(201).json({
+      success: true,
+      data: announcement,
+      delivery: {
+        registeredDevices: new Set(tokens.map(item => item.token)).size,
+        sent: delivery.sent,
+        failed: delivery.failed,
+        errors: delivery.errors
+      }
+    });
+  } catch (error) {
+    console.error('[Admin] Failed to send announcement:', error);
+    res.status(500).json({ success: false, message: 'Could not publish the broadcast.' });
+  }
+});
+
+app.post('/api/push/register', async (req, res) => {
+  try {
+    const { userId, token, platform } = req.body || {};
+    const validToken = typeof token === 'string' && /^Expo(nent)?PushToken\[[^\]]+\]$/.test(token);
+    if (typeof userId !== 'string' || !validToken || !['android', 'ios'].includes(platform)) {
+      return res.status(400).json({ success: false, message: 'A valid user, Expo push token, and platform are required.' });
+    }
+    const registration = await db.registerPushToken(userId, token, platform);
+    if (!registration) return res.status(404).json({ success: false, message: 'Student account not found.' });
+    res.json({ success: true });
+  } catch (error) {
+    console.error('[Push] Failed to register device token:', error);
+    res.status(500).json({ success: false, message: 'Could not register this device for notifications.' });
+  }
+});
+
+app.post('/api/push/unregister', async (req, res) => {
+  try {
+    const { token } = req.body || {};
+    if (typeof token !== 'string' || !/^Expo(nent)?PushToken\[[^\]]+\]$/.test(token)) {
+      return res.status(400).json({ success: false, message: 'A valid Expo push token is required.' });
+    }
+    await db.removePushTokens([token]);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('[Push] Failed to unregister device token:', error);
+    res.status(500).json({ success: false, message: 'Could not unregister this device.' });
+  }
+});
+
+app.get('/api/announcements', async (req, res) => {
+  try {
+    res.json({ success: true, data: await db.getAnnouncements(10) });
+  } catch (error) {
+    console.error('[Push] Failed to load announcements:', error);
+    res.status(500).json({ success: false, message: 'Could not load announcements.' });
+  }
+});
+
+app.get('/api/admin/app-releases', requireAdmin, async (req, res) => {
+  try {
+    const releases = await db.getAppReleases(10);
+    res.json({
+      success: true,
+      data: releases.map(({ storageKey, ...release }) => release)
+    });
+  } catch (error) {
+    console.error('[Admin] Failed to load app releases:', error);
+    res.status(500).json({ success: false, message: 'Could not load app release history.' });
+  }
+});
+
+app.post('/api/admin/app-releases', requireAdmin, (req, res) => {
+  if (!r2Storage.isConfigured()) {
+    return res.status(503).json({ success: false, message: 'Cloudflare R2 must be configured before publishing an APK.' });
+  }
+
+  appReleaseUpload.single('apk')(req, res, async (uploadError) => {
+    if (uploadError) {
+      const status = uploadError instanceof multer.MulterError && uploadError.code === 'LIMIT_FILE_SIZE' ? 413 : 400;
+      return res.status(status).json({
+        success: false,
+        message: status === 413
+          ? `APK exceeds the ${appReleaseUploadLimitMb}MB upload limit.`
+          : uploadError.message
+      });
+    }
+
+    let storageKey = null;
+    let releaseSaved = false;
+    try {
+      const versionName = typeof req.body?.versionName === 'string' ? req.body.versionName.trim() : '';
+      const versionCode = Number(req.body?.versionCode);
+      const notes = typeof req.body?.notes === 'string' ? req.body.notes.trim() : '';
+      if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(versionName) ||
+          !Number.isSafeInteger(versionCode) || versionCode < 1 ||
+          notes.length > 1000 || !req.file) {
+        return res.status(400).json({
+          success: false,
+          message: 'Provide a valid version (for example 1.2.0), a positive Android version code, release notes up to 1000 characters, and an APK.'
+        });
+      }
+
+      const currentRelease = await db.getAppRelease();
+      if (currentRelease && versionCode <= currentRelease.versionCode) {
+        return res.status(409).json({
+          success: false,
+          message: `Version code must be greater than the latest published code (${currentRelease.versionCode}).`
+        });
+      }
+
+      const handle = await fs.promises.open(req.file.path, 'r');
+      const signature = Buffer.alloc(4);
+      try {
+        await handle.read(signature, 0, signature.length, 0);
+      } finally {
+        await handle.close();
+      }
+      if (signature.toString('hex') !== '504b0304') {
+        return res.status(400).json({ success: false, message: 'The selected file is not a valid Android APK archive.' });
+      }
+
+      storageKey = await r2Storage.uploadAppRelease(req.file.path);
+      const release = await db.addAppRelease({
+        id: `release_${randomUUID()}`,
+        versionName,
+        versionCode,
+        notes,
+        storageKey
+      });
+      releaseSaved = true;
+      let pushTokens = [];
+      let delivery = { sent: 0, failed: 0, invalidTokens: [], errors: [] };
+      try {
+        pushTokens = await db.getPushTokens();
+        delivery = await sendPushToAll(pushTokens, {
+          title: 'PMC Leela update available',
+          body: `Version ${versionName} is ready. Open Me in the app to install it.`,
+          data: { type: 'app-update', versionCode }
+        });
+        if (delivery.invalidTokens.length) {
+          await db.removePushTokens(delivery.invalidTokens);
+        }
+      } catch (pushError) {
+        delivery.failed = pushTokens.length;
+        delivery.errors = [pushError.message];
+        console.error('[Push] APK release was saved, but push delivery could not be completed:', pushError);
+      }
+      const { storageKey: savedStorageKey, ...publicRelease } = release;
+      console.info(`[Admin] Published Android release ${versionName} (${versionCode}).`);
+      res.status(201).json({
+        success: true,
+        data: publicRelease,
+        delivery: {
+          registeredDevices: new Set(pushTokens.map(item => item.token)).size,
+          sent: delivery.sent,
+          failed: delivery.failed,
+          errors: delivery.errors
+        }
+      });
+    } catch (error) {
+      if (storageKey && !releaseSaved) {
+        await r2Storage.deleteVideo(storageKey).catch(cleanupError => {
+          console.error('[Admin] Could not remove failed APK upload:', cleanupError);
+        });
+      }
+      const duplicateVersion = error.code === 'P2002' || error.code === 'DUPLICATE_VERSION_CODE';
+      console.error('[Admin] Failed to publish APK:', error);
+      res.status(duplicateVersion ? 409 : 500).json({
+        success: false,
+        message: duplicateVersion ? 'This Android version code has already been published.' : 'Could not publish this APK.'
+      });
+    } finally {
+      if (req.file?.path) {
+        await fs.promises.unlink(req.file.path).catch(cleanupError => {
+          if (cleanupError.code !== 'ENOENT') console.error('[Admin] Could not remove temporary APK:', cleanupError);
+        });
+      }
+    }
+  });
+});
+
+app.get('/api/app-release', async (req, res) => {
+  try {
+    const release = await db.getAppRelease();
+    if (!release) return res.json({ success: true, data: null });
+    const { storageKey, ...publicRelease } = release;
+    res.json({
+      success: true,
+      data: {
+        ...publicRelease,
+        downloadUrl: await r2Storage.getVideoUrl(storageKey)
+      }
+    });
+  } catch (error) {
+    console.error('[App] Failed to load current release:', error);
+    res.status(503).json({ success: false, message: 'Could not load the current app update.' });
+  }
+});
 
 // Health check
 app.get('/api/health', async (req, res) => {
@@ -560,6 +998,32 @@ app.post('/api/reels/:id/like', async (req, res) => {
   } catch (error) {
     console.error('Reel like error:', error);
     res.status(500).json({ success: false, message: 'Could not update reel like.' });
+  }
+});
+
+app.post('/api/reels/:id/report', async (req, res) => {
+  try {
+    const reporterId = typeof req.body?.reporterId === 'string' ? req.body.reporterId.trim() : '';
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : '';
+    const validReasons = [
+      'Harassment or bullying',
+      'Explicit content',
+      'Hate or discrimination',
+      'Spam or misleading',
+      'Other'
+    ];
+    if (!reporterId || !validReasons.includes(reason)) {
+      return res.status(400).json({ success: false, message: 'Select a valid report reason.' });
+    }
+    const report = await db.addReelReport(req.params.id, reporterId, reason);
+    if (!report) return res.status(404).json({ success: false, message: 'Reel or account not found.' });
+    if (report.duplicate) {
+      return res.status(409).json({ success: false, message: 'You have already reported this reel.' });
+    }
+    res.status(201).json({ success: true, message: 'Report sent to the PMC moderation team.' });
+  } catch (error) {
+    console.error('[Reels] Failed to record reel report:', error);
+    res.status(500).json({ success: false, message: 'Could not submit this report.' });
   }
 });
 

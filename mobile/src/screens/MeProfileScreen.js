@@ -1,5 +1,8 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
+  ActivityIndicator,
+  Alert,
+  AppState,
   StyleSheet,
   Text,
   View,
@@ -7,11 +10,14 @@ import {
   Image,
   ScrollView,
   TextInput,
-  Alert,
   Modal,
-  ActivityIndicator
+  Platform
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
+import * as FileSystem from 'expo-file-system/legacy';
+import * as IntentLauncher from 'expo-intent-launcher';
+import Constants from 'expo-constants';
+import * as Notifications from 'expo-notifications';
 import { Ionicons } from '@expo/vector-icons';
 import { getBaseUrl } from '../config';
 
@@ -30,6 +36,7 @@ export default function MeProfileScreen({
   onUpdateCurrentUser,
   onLogout,
   serverHost,
+  isTabActive,
   onDeleteAccount
 }) {
   const [showEditPersonaModal, setShowEditPersonaModal] = useState(false);
@@ -38,6 +45,114 @@ export default function MeProfileScreen({
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [showTermsModal, setShowTermsModal] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [announcements, setAnnouncements] = useState([]);
+  const [appRelease, setAppRelease] = useState(null);
+  const [isDownloadingUpdate, setIsDownloadingUpdate] = useState(false);
+
+  useEffect(() => {
+    if (!isTabActive) return undefined;
+    let active = true;
+    const loadUpdates = async () => {
+      const baseUrl = getBaseUrl(serverHost);
+      const [announcementResult, releaseResult] = await Promise.allSettled([
+        fetch(`${baseUrl}/api/announcements`).then(async response => {
+          const result = await response.json();
+          if (!response.ok || !result.success) throw new Error(result.message || 'Could not load announcements.');
+          return result.data;
+        }),
+        fetch(`${baseUrl}/api/app-release`).then(async response => {
+          const result = await response.json();
+          if (!response.ok || !result.success) throw new Error(result.message || 'Could not check for app updates.');
+          return result.data;
+        })
+      ]);
+      if (!active) return;
+      if (announcementResult.status === 'fulfilled') {
+        setAnnouncements(announcementResult.value);
+      } else {
+        console.warn('[Announcements] Could not refresh messages:', announcementResult.reason?.message);
+      }
+      if (releaseResult.status === 'fulfilled') {
+        setAppRelease(releaseResult.value);
+      } else {
+        console.warn('[Updates] Could not check for app updates:', releaseResult.reason?.message);
+      }
+    };
+
+    loadUpdates();
+    const interval = setInterval(loadUpdates, 15 * 60 * 1000);
+    const notificationSubscription = Notifications.addNotificationReceivedListener(loadUpdates);
+    const subscription = AppState.addEventListener('change', state => {
+      if (state === 'active') loadUpdates();
+    });
+    return () => {
+      active = false;
+      clearInterval(interval);
+      notificationSubscription.remove();
+      subscription.remove();
+    };
+  }, [isTabActive, serverHost]);
+
+  const installUpdate = async () => {
+    if (Platform.OS !== 'android' || !appRelease?.downloadUrl) {
+      Alert.alert('Update unavailable', 'App updates can be installed from this screen on Android.');
+      return;
+    }
+    setIsDownloadingUpdate(true);
+    let downloadedApkUri = null;
+    try {
+      const updateStorage = FileSystem.cacheDirectory || FileSystem.documentDirectory;
+      if (!updateStorage) throw new Error('App storage is unavailable.');
+      const directory = `${updateStorage}app-updates/`;
+      const directoryInfo = await FileSystem.getInfoAsync(directory);
+      if (!directoryInfo.exists) {
+        await FileSystem.makeDirectoryAsync(directory, { intermediates: true });
+      }
+      const apkUri = `${directory}pmc-leela-${appRelease.versionCode}.apk`;
+      const existingFile = await FileSystem.getInfoAsync(apkUri);
+      if (existingFile.exists) await FileSystem.deleteAsync(apkUri);
+
+      const download = await FileSystem.downloadAsync(appRelease.downloadUrl, apkUri);
+      if (download.status < 200 || download.status >= 300) {
+        throw new Error(`APK download failed (${download.status}).`);
+      }
+      downloadedApkUri = download.uri;
+      const contentUri = await FileSystem.getContentUriAsync(download.uri);
+      await IntentLauncher.startActivityAsync('android.intent.action.INSTALL_PACKAGE', {
+        data: contentUri,
+        type: 'application/vnd.android.package-archive',
+        flags: 1
+      });
+    } catch (error) {
+      console.error('[Updates] APK download or installer launch failed:', error);
+      const message = `${error.message}\n\nAndroid may require you to allow installs from PMC Leela. The system installer will ask you to confirm the update.`;
+      if (downloadedApkUri) {
+        Alert.alert('Could not start installation', message, [
+          { text: 'Not now', style: 'cancel' },
+          {
+            text: 'Open install settings',
+            onPress: () => {
+              IntentLauncher.startActivityAsync(
+                'android.settings.MANAGE_UNKNOWN_APP_SOURCES',
+                { data: 'package:com.pmcleela.app' }
+              ).catch(settingsError => {
+                console.error('[Updates] Could not open Android install settings:', settingsError);
+                Alert.alert('Settings unavailable', settingsError.message);
+              });
+            }
+          }
+        ]);
+      } else {
+        Alert.alert('Could not download update', message);
+      }
+    } finally {
+      setIsDownloadingUpdate(false);
+    }
+  };
+
+  const installedVersionCode = Number(Constants.expoConfig?.android?.versionCode || 1);
+  const hasAppUpdate = Platform.OS === 'android' &&
+    appRelease && Number(appRelease.versionCode) > installedVersionCode;
 
   // Pick Custom Avatar Photo
   const handlePickAvatar = async () => {
@@ -246,6 +361,57 @@ export default function MeProfileScreen({
           </Text>
         </View>
       </View>
+
+      {(hasAppUpdate || announcements.length > 0) && (
+        <View style={styles.announcementSection}>
+          <View style={styles.sectionHeadingRow}>
+            <View>
+              <Text style={styles.sectionTitle}>Updates & announcements</Text>
+              <Text style={styles.sectionDescription}>Messages from the PMC team</Text>
+            </View>
+            <Ionicons name="notifications-outline" size={19} color="#f0a2cc" />
+          </View>
+
+          {hasAppUpdate && (
+            <View style={styles.updateCard}>
+              <View style={styles.updateHeading}>
+                <View style={styles.updateIcon}>
+                  <Ionicons name="arrow-up-circle-outline" size={21} color="#f9a8d4" />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.updateTitle}>Version {appRelease.versionName} is available</Text>
+                  <Text style={styles.announcementDate}>Current version {Constants.expoConfig?.version || 'installed'}</Text>
+                </View>
+              </View>
+              {appRelease.notes ? <Text style={styles.announcementMessage}>{appRelease.notes}</Text> : null}
+              <TouchableOpacity
+                style={styles.updateButton}
+                onPress={installUpdate}
+                disabled={isDownloadingUpdate}
+                activeOpacity={0.85}
+              >
+                {isDownloadingUpdate
+                  ? <ActivityIndicator color="#fff" />
+                  : <>
+                      <Ionicons name="download-outline" size={17} color="#fff" />
+                      <Text style={styles.updateButtonText}>Download update</Text>
+                    </>}
+              </TouchableOpacity>
+              <Text style={styles.installNote}>Android will ask you to confirm installation.</Text>
+            </View>
+          )}
+
+          {announcements.slice(0, 5).map(item => (
+            <View key={item.id} style={styles.announcementCard}>
+              <Text style={styles.updateTitle}>{item.title}</Text>
+              <Text style={styles.announcementMessage}>{item.message}</Text>
+              <Text style={styles.announcementDate}>
+                {item.createdAt ? new Date(item.createdAt).toLocaleString() : 'PMC announcement'}
+              </Text>
+            </View>
+          ))}
+        </View>
+      )}
 
       <View style={styles.menuSection}>
         <Text style={styles.sectionTitle}>Preferences & safety</Text>
@@ -607,6 +773,76 @@ const styles = StyleSheet.create({
     borderColor: '#252c38',
     padding: 16,
     marginBottom: 27
+  },
+  announcementSection: {
+    marginBottom: 25
+  },
+  announcementCard: {
+    backgroundColor: '#11151f',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#252c38',
+    padding: 15,
+    marginBottom: 10
+  },
+  updateCard: {
+    backgroundColor: '#171423',
+    borderRadius: 17,
+    borderWidth: 1,
+    borderColor: 'rgba(244, 114, 182, 0.28)',
+    padding: 16,
+    marginBottom: 10
+  },
+  updateHeading: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 11,
+    marginBottom: 8
+  },
+  updateIcon: {
+    width: 39,
+    height: 39,
+    borderRadius: 13,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(244, 114, 182, 0.11)'
+  },
+  updateTitle: {
+    color: '#f1eaf2',
+    fontSize: 13,
+    fontWeight: '700'
+  },
+  announcementMessage: {
+    color: '#c1c5d0',
+    fontSize: 12,
+    lineHeight: 18,
+    marginTop: 8
+  },
+  announcementDate: {
+    color: '#818a9e',
+    fontSize: 10,
+    marginTop: 7
+  },
+  updateButton: {
+    minHeight: 43,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: '#db2777',
+    borderRadius: 12,
+    marginTop: 14
+  },
+  updateButtonText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '700'
+  },
+  installNote: {
+    color: '#929bad',
+    fontSize: 10,
+    textAlign: 'center',
+    marginTop: 9
   },
   privateDetailRow: {
     flexDirection: 'row',

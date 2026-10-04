@@ -13,9 +13,15 @@
 **/*.pem
 **/*.key
 **/*.jks
+**/*.keystore
 **/*.p8
 **/*.p12
+**/*.pfx
 **/*.mobileprovision
+**/credentials.json
+**/*service-account*.json
+**/firebase-adminsdk-*.json
+**/local.properties
 
 # Local application data and uploaded media
 server/data/
@@ -24,6 +30,8 @@ server/uploads/
 # Generated native/build outputs and release binaries
 mobile/android/
 mobile/ios/
+pmc-admin/android/
+pmc-admin/ios/
 *.apk
 *.aab
 *.ipa

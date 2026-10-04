@@ -11,6 +11,11 @@
     },
     "android": {
       "package": "com.pmcleela.app",
+      "versionCode": 1,
+      "softwareKeyboardLayoutMode": "resize",
+      "permissions": [
+        "REQUEST_INSTALL_PACKAGES"
+      ],
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/android-icon-foreground.png",
@@ -23,7 +28,13 @@
     },
     "plugins": [
       "expo-font",
-      "expo-video"
+      "expo-video",
+      [
+        "expo-notifications",
+        {
+          "defaultChannel": "announcements"
+        }
+      ]
     ],
     "extra": {
       "eas": {

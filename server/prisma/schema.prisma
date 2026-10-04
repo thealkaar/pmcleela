@@ -16,6 +16,8 @@ model PmcUser {
   phone         String?
   data          Json    @db.JsonB
   reelLikes     PmcReelLike[]
+  reelReports   PmcReelReport[]
+  pushTokens    PmcPushToken[]
 
   @@index([phone], map: "pmc_users_phone_idx")
   @@map("pmc_users")
@@ -28,6 +30,7 @@ model PmcReel {
   data      Json     @db.JsonB
   likes     PmcReelLike[]
   comments  PmcReelComment[]
+  reports   PmcReelReport[]
 
   @@index([createdAt(sort: Desc)], map: "pmc_reels_created_at_idx")
   @@index([creatorId], map: "pmc_reels_creator_id_idx")
@@ -57,4 +60,53 @@ model PmcReelComment {
 
   @@index([reelId, createdAt(sort: Desc)], map: "pmc_reel_comments_reel_id_created_at_idx")
   @@map("pmc_reel_comments")
+}
+
+model PmcReelReport {
+  id         String   @id
+  reelId     String   @map("reel_id")
+  reporterId String   @map("reporter_id")
+  reason     String
+  status     String   @default("pending")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  reviewedAt DateTime? @map("reviewed_at") @db.Timestamptz(6)
+  reel       PmcReel  @relation(fields: [reelId], references: [id], onDelete: Cascade)
+  reporter   PmcUser  @relation(fields: [reporterId], references: [id], onDelete: Cascade)
+
+  @@unique([reelId, reporterId])
+  @@index([status, createdAt(sort: Desc)], map: "pmc_reel_reports_status_created_at_idx")
+  @@map("pmc_reel_reports")
+}
+
+model PmcPushToken {
+  token     String   @id
+  userId    String   @map("user_id")
+  platform  String
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  user      PmcUser  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId], map: "pmc_push_tokens_user_id_idx")
+  @@map("pmc_push_tokens")
+}
+
+model PmcAnnouncement {
+  id        String   @id
+  title     String
+  message   String
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([createdAt(sort: Desc)], map: "pmc_announcements_created_at_idx")
+  @@map("pmc_announcements")
+}
+
+model PmcAppRelease {
+  id          String   @id
+  versionName String   @map("version_name")
+  versionCode Int      @unique @map("version_code")
+  notes       String
+  storageKey  String   @map("storage_key")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@map("pmc_app_releases")
 }

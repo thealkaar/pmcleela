@@ -567,13 +567,6 @@ export default function PmcChatScreen({ serverHost, currentUser, onActiveChatCha
             <View style={styles.avatarOrb}>
               <Ionicons name="person" size={20} color="#cbd5e1" />
             </View>
-
-            {/* Female is green; male is blue. */}
-            {partnerGender === 'female' ? (
-              <Animated.View style={[styles.greenBlinkingDot, { opacity: blinkAnim }]} />
-            ) : (
-              <Animated.View style={[styles.blueBlinkingDot, { opacity: blinkAnim }]} />
-            )}
           </View>
 
           <View style={{ marginLeft: 12 }}>
@@ -582,9 +575,14 @@ export default function PmcChatScreen({ serverHost, currentUser, onActiveChatCha
                 {partnerAlias || 'Stranger'}
               </Text>
               <View style={styles.genderLabel}>
-                <View style={partnerGender === 'female' ? styles.genderDotFemale : styles.genderDotMale} />
+                <Animated.View
+                  style={[
+                    partnerGender === 'female' ? styles.genderDotFemale : styles.genderDotMale,
+                    { opacity: blinkAnim }
+                  ]}
+                />
                 <Text style={styles.genderLabelMini}>
-                  {partnerGender === 'female' ? 'G · Girl' : 'B · Boy'}
+                  {partnerGender === 'female' ? 'G' : 'B'}
                 </Text>
               </View>
             </View>
@@ -1015,40 +1013,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center'
   },
-  // Girl Gender Indicator: Green Glowing Blinking Dot
-  greenBlinkingDot: {
-    position: 'absolute',
-    top: 0,
-    right: 0,
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    backgroundColor: '#10b981',
-    borderWidth: 2,
-    borderColor: '#0c0e17',
-    shadowColor: '#10b981',
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.9,
-    shadowRadius: 6,
-    elevation: 8
-  },
-  // Boy Gender Indicator: Blue Glowing Blinking Dot
-  blueBlinkingDot: {
-    position: 'absolute',
-    top: 0,
-    right: 0,
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    backgroundColor: '#3b82f6',
-    borderWidth: 2,
-    borderColor: '#0c0e17',
-    shadowColor: '#3b82f6',
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.9,
-    shadowRadius: 6,
-    elevation: 8
-  },
   partnerAliasText: {
     color: '#f8fafc',
     fontWeight: '700',
@@ -1065,14 +1029,14 @@ const styles = StyleSheet.create({
     marginLeft: 5
   },
   genderDotFemale: {
-    width: 7,
-    height: 7,
+    width: 8,
+    height: 8,
     borderRadius: 4,
     backgroundColor: '#10b981'
   },
   genderDotMale: {
-    width: 7,
-    height: 7,
+    width: 8,
+    height: 8,
     borderRadius: 4,
     backgroundColor: '#3b82f6'
   },

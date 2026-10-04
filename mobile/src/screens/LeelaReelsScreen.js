@@ -315,7 +315,8 @@ function ReelItem({
   height = REEL_HEIGHT,
   onLike,
   onOpenComments,
-  onShare
+  onShare,
+  onReport
 }) {
   const [isPaused, setIsPaused] = useState(false);
   const playbackFeedback = useRef(new Animated.Value(0));
@@ -483,6 +484,19 @@ function ReelItem({
           </View>
           <Text style={styles.actionCount}>Share</Text>
         </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.actionItem}
+          onPress={() => onReport(item)}
+          activeOpacity={0.7}
+          accessibilityRole="button"
+          accessibilityLabel="Report reel"
+        >
+          <View style={styles.actionIconCircle}>
+            <Ionicons name="flag-outline" size={20} color="#ffffff" />
+          </View>
+          <Text style={styles.actionCount}>Report</Text>
+        </TouchableOpacity>
       </View>
     </View>
   );
@@ -589,6 +603,8 @@ export default function LeelaReelsScreen({ serverHost, currentUser, isTabActive 
   // Comments modal state
   const [commentsModalVisible, setCommentsModalVisible] = useState(false);
   const [selectedReel, setSelectedReel] = useState(null);
+  const [reelToReport, setReelToReport] = useState(null);
+  const [reportSubmitting, setReportSubmitting] = useState(false);
   const [commentText, setCommentText] = useState('');
   const [commentPosting, setCommentPosting] = useState(false);
   const likeQueuesRef = useRef(new Map());
@@ -789,6 +805,43 @@ export default function LeelaReelsScreen({ serverHost, currentUser, isTabActive 
       });
     } catch (err) {
       console.log('Share error:', err);
+    }
+  };
+
+  const handleReportReel = (reel) => {
+    if (!currentUser?.id) {
+      Alert.alert('Sign in required', 'Please sign in again to report a reel.');
+      return;
+    }
+    if (reel.creatorId === currentUser.id) {
+      Alert.alert('Cannot report your reel', 'You cannot report a reel posted by your account.');
+      return;
+    }
+    setReelToReport(reel);
+  };
+
+  const submitReelReport = async (reason) => {
+    if (!reelToReport || reportSubmitting) return;
+    setReportSubmitting(true);
+    try {
+      const response = await fetch(
+        `${getBaseUrl(serverHost)}/api/reels/${reelToReport.id}/report`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reporterId: currentUser.id, reason })
+        }
+      );
+      const result = await response.json();
+      if (!response.ok || !result.success) {
+        throw new Error(result.message || 'Could not submit this report.');
+      }
+      setReelToReport(null);
+      Alert.alert('Report submitted', 'Thank you. The PMC moderation team will review this reel.');
+    } catch (error) {
+      Alert.alert('Report not sent', error.message || 'Please try again.');
+    } finally {
+      setReportSubmitting(false);
     }
   };
 
@@ -997,6 +1050,7 @@ export default function LeelaReelsScreen({ serverHost, currentUser, isTabActive 
               onLike={handleLike}
               onOpenComments={handleOpenComments}
               onShare={handleShare}
+              onReport={handleReportReel}
             />
           )}
         />
@@ -1011,7 +1065,7 @@ export default function LeelaReelsScreen({ serverHost, currentUser, isTabActive 
       >
         <KeyboardAvoidingView
           style={styles.commentsBackdrop}
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         >
           <View style={styles.commentsSheet}>
             <View style={styles.sheetHandle} />
@@ -1073,6 +1127,49 @@ export default function LeelaReelsScreen({ serverHost, currentUser, isTabActive 
             </View>
           </View>
         </KeyboardAvoidingView>
+      </Modal>
+
+      <Modal
+        visible={Boolean(reelToReport)}
+        transparent
+        animationType="slide"
+        onRequestClose={() => !reportSubmitting && setReelToReport(null)}
+      >
+        <View style={styles.commentsBackdrop}>
+          <View style={styles.reportSheet}>
+            <View style={styles.sheetHandle} />
+            <Text style={styles.commentsTitle}>Report this reel</Text>
+            <Text style={styles.reportDescription}>Choose a reason to send it to PMC moderation.</Text>
+            {[
+              'Harassment or bullying',
+              'Explicit content',
+              'Hate or discrimination',
+              'Spam or misleading',
+              'Other'
+            ].map(reason => (
+              <TouchableOpacity
+                key={reason}
+                style={styles.reportReasonButton}
+                onPress={() => submitReelReport(reason)}
+                disabled={reportSubmitting}
+              >
+                <Text style={styles.reportReasonText}>{reason}</Text>
+                {reportSubmitting ? (
+                  <ActivityIndicator size="small" color="#ec4899" />
+                ) : (
+                  <Ionicons name="chevron-forward" size={16} color="#94a3b8" />
+                )}
+              </TouchableOpacity>
+            ))}
+            <TouchableOpacity
+              style={styles.reportCancelButton}
+              onPress={() => setReelToReport(null)}
+              disabled={reportSubmitting}
+            >
+              <Text style={styles.reportCancelText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
       </Modal>
 
       {/* Video Source Selection Sheet (Camera vs Gallery) */}
@@ -1436,6 +1533,42 @@ const styles = StyleSheet.create({
     borderTopRightRadius: 24,
     height: '60%',
     padding: 16
+  },
+  reportSheet: {
+    backgroundColor: '#111420',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingHorizontal: 20,
+    paddingTop: 14,
+    paddingBottom: 28
+  },
+  reportDescription: {
+    color: '#94a3b8',
+    fontSize: 12,
+    marginTop: 6,
+    marginBottom: 14
+  },
+  reportReasonButton: {
+    minHeight: 48,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderBottomWidth: 1,
+    borderBottomColor: '#1e2438'
+  },
+  reportReasonText: {
+    color: '#e2e8f0',
+    fontSize: 14
+  },
+  reportCancelButton: {
+    alignItems: 'center',
+    paddingVertical: 14,
+    marginTop: 6
+  },
+  reportCancelText: {
+    color: '#f472b6',
+    fontSize: 14,
+    fontWeight: '700'
   },
   sheetHandle: {
     width: 40,

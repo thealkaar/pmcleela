@@ -51,8 +51,16 @@ function getMissingConfig() {
 }
 
 async function uploadVideo(filePath, contentType = 'video/mp4') {
+  return uploadObject(filePath, 'reels', contentType);
+}
+
+async function uploadAppRelease(filePath) {
+  return uploadObject(filePath, 'app-releases', 'application/vnd.android.package-archive', '.apk');
+}
+
+async function uploadObject(filePath, prefix, contentType, extension) {
   const { bucket, client } = getConfig();
-  const key = `reels/${randomUUID()}${path.extname(filePath) || '.mp4'}`;
+  const key = `${prefix}/${randomUUID()}${extension || path.extname(filePath) || '.mp4'}`;
   const { size } = await fs.promises.stat(filePath);
 
   await client.send(new PutObjectCommand({
@@ -85,4 +93,11 @@ async function deleteVideo(key) {
   await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
 }
 
-module.exports = { deleteVideo, getMissingConfig, getVideoUrl, isConfigured, uploadVideo };
+module.exports = {
+  deleteVideo,
+  getMissingConfig,
+  getVideoUrl,
+  isConfigured,
+  uploadAppRelease,
+  uploadVideo
+};
