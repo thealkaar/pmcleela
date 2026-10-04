@@ -1,0 +1,30 @@
+# Dependencies and local tooling
+**/node_modules/
+**/.expo/
+**/.metro-health-check*
+**/web-build/
+**/dist/
+**/coverage/
+
+# Local secrets and environment configuration
+.env
+.env.*
+!.env.example
+**/*.pem
+**/*.key
+**/*.jks
+**/*.p8
+**/*.p12
+**/*.mobileprovision
+
+# Local application data and uploaded media
+server/data/
+server/uploads/
+
+# Generated native/build outputs and release binaries
+mobile/android/
+mobile/ios/
+*.apk
+*.aab
+*.ipa
+*.log
