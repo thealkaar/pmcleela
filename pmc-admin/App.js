@@ -16,6 +16,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as DocumentPicker from 'expo-document-picker';
+import { File } from 'expo-file-system';
 import { VideoView, useVideoPlayer } from 'expo-video';
 
 const API_URL = (process.env.EXPO_PUBLIC_API_URL || 'https://pmcleela.onrender.com').replace(/\/+$/, '');
@@ -124,7 +125,6 @@ export default function App() {
   const [apkAsset, setApkAsset] = useState(null);
   const [releaseBusy, setReleaseBusy] = useState(false);
   const [newUser, setNewUser] = useState({
-    fullName: '',
     email: '',
     password: '',
     anonymousName: '',
@@ -202,7 +202,7 @@ export default function App() {
       setUsers(previous => [{ ...result.data, reelsCount: 0 }, ...previous]);
       setAddUserVisible(false);
       setNewUser({
-        fullName: '', email: '', password: '', anonymousName: '', phone: '',
+        email: '', password: '', anonymousName: '', phone: '',
         gender: 'female', academicYear: '1st Year', hostel: ''
       });
       Alert.alert('Account created', 'The student account is verified and ready to sign in.');
@@ -268,11 +268,7 @@ export default function App() {
       body.append('versionName', releaseVersionName.trim());
       body.append('versionCode', releaseVersionCode.trim());
       body.append('notes', releaseNotes.trim());
-      body.append('apk', {
-        uri: apkAsset.uri,
-        name: apkAsset.name,
-        type: apkAsset.mimeType || 'application/vnd.android.package-archive'
-      });
+      body.append('apk', new File(apkAsset.uri), apkAsset.name);
       const result = await uploadRequest('/api/admin/app-releases', token, body);
       setAppReleases(previous => [result.data, ...previous]);
       setApkAsset(null);
@@ -293,7 +289,7 @@ export default function App() {
   const deleteUser = (user) => {
     Alert.alert(
       'Remove student account?',
-      `This permanently removes ${user.fullName || user.anonymousName}, their reels and associated data.`,
+      `This permanently removes ${user.anonymousName || 'this student'}, their reels and associated data.`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -374,7 +370,7 @@ export default function App() {
           <Ionicons name="person-outline" size={20} color="#f9a8d4" />
         </View>
         <View style={styles.cardHeading}>
-          <Text style={styles.cardTitle}>{item.fullName || item.anonymousName || 'Student'}</Text>
+          <Text style={styles.cardTitle}>{item.anonymousName || 'Student'}</Text>
           <Text style={styles.cardSubtitle}>{item.anonymousName} · {item.email}</Text>
         </View>
         <TouchableOpacity style={styles.dangerIconButton} onPress={() => deleteUser(item)}>
@@ -395,7 +391,7 @@ export default function App() {
       <TouchableOpacity
         style={styles.viewContentButton}
         onPress={() => {
-          setReelOwnerFilter({ id: item.id, name: item.anonymousName || item.fullName });
+          setReelOwnerFilter({ id: item.id, name: item.anonymousName || 'Student' });
           setTab('reels');
         }}
       >
@@ -746,7 +742,6 @@ export default function App() {
               </TouchableOpacity>
             </View>
             <ScrollView keyboardShouldPersistTaps="handled">
-              <Field label="Full name" value={newUser.fullName} onChangeText={value => updateNewUser('fullName', value)} autoCapitalize="words" />
               <Field label="MANIT student email" value={newUser.email} onChangeText={value => updateNewUser('email', value)} keyboardType="email-address" />
               <Field label="Campus name" value={newUser.anonymousName} onChangeText={value => updateNewUser('anonymousName', value)} autoCapitalize="words" />
               <Field label="Initial password (12+ characters)" value={newUser.password} onChangeText={value => updateNewUser('password', value)} secureTextEntry />

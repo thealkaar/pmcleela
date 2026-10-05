@@ -18,8 +18,11 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as IntentLauncher from 'expo-intent-launcher';
 import Constants from 'expo-constants';
 import * as Notifications from 'expo-notifications';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import { getBaseUrl } from '../config';
+
+const DISMISSED_NOTIFICATIONS_KEY = '@pmc_leela_dismissed_notifications';
 
 const formatYearShort = (val) => {
   if (!val) return '1st';
@@ -42,12 +45,61 @@ export default function MeProfileScreen({
   const [showEditPersonaModal, setShowEditPersonaModal] = useState(false);
   const [newPersona, setNewPersona] = useState(currentUser?.anonymousName || 'Hostel Senior');
 
+  const [showNotifications, setShowNotifications] = useState(false);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [showTermsModal, setShowTermsModal] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [announcements, setAnnouncements] = useState([]);
   const [appRelease, setAppRelease] = useState(null);
   const [isDownloadingUpdate, setIsDownloadingUpdate] = useState(false);
+  const [dismissedNotifications, setDismissedNotifications] = useState({
+    userId: null,
+    announcementIds: [],
+    releaseCodes: []
+  });
+  const [isLoadingDismissedNotifications, setIsLoadingDismissedNotifications] = useState(true);
+
+  const notificationUserId = currentUser?.id ? String(currentUser.id) : null;
+  const notificationStorageKey = notificationUserId
+    ? `${DISMISSED_NOTIFICATIONS_KEY}:${encodeURIComponent(notificationUserId)}`
+    : null;
+
+  useEffect(() => {
+    let active = true;
+    const loadDismissedNotifications = async () => {
+      setIsLoadingDismissedNotifications(true);
+      if (!notificationStorageKey || !notificationUserId) {
+        setDismissedNotifications({ userId: null, announcementIds: [], releaseCodes: [] });
+        setIsLoadingDismissedNotifications(false);
+        return;
+      }
+
+      try {
+        const stored = await AsyncStorage.getItem(notificationStorageKey);
+        const parsed = stored ? JSON.parse(stored) : {};
+        const saved = parsed && typeof parsed === 'object' ? parsed : {};
+        if (!active) return;
+        setDismissedNotifications({
+          userId: notificationUserId,
+          announcementIds: Array.isArray(saved.announcementIds) ? saved.announcementIds.map(String) : [],
+          releaseCodes: Array.isArray(saved.releaseCodes) ? saved.releaseCodes.map(String) : []
+        });
+      } catch (error) {
+        console.warn('[Notifications] Could not load dismissed items:', error.message);
+        if (active) {
+          setDismissedNotifications({ userId: notificationUserId, announcementIds: [], releaseCodes: [] });
+          Alert.alert('Could not load notification settings', 'Dismissed notifications could not be loaded from this device.');
+        }
+      } finally {
+        if (active) setIsLoadingDismissedNotifications(false);
+      }
+    };
+
+    loadDismissedNotifications();
+    return () => {
+      active = false;
+    };
+  }, [notificationStorageKey, notificationUserId]);
 
   useEffect(() => {
     if (!isTabActive) return undefined;
@@ -151,8 +203,50 @@ export default function MeProfileScreen({
   };
 
   const installedVersionCode = Number(Constants.expoConfig?.android?.versionCode || 1);
-  const hasAppUpdate = Platform.OS === 'android' &&
+  const hasAppUpdateAvailable = Platform.OS === 'android' &&
     appRelease && Number(appRelease.versionCode) > installedVersionCode;
+  const dismissedForCurrentUser = dismissedNotifications.userId === notificationUserId
+    ? dismissedNotifications
+    : { announcementIds: [], releaseCodes: [] };
+  const visibleAnnouncements = announcements.filter(
+    item => !dismissedForCurrentUser.announcementIds.includes(String(item.id))
+  );
+  const releaseCode = appRelease ? String(appRelease.versionCode) : null;
+  const hasAppUpdate = Boolean(
+    hasAppUpdateAvailable &&
+    releaseCode &&
+    !dismissedForCurrentUser.releaseCodes.includes(releaseCode)
+  );
+  const notificationCount = visibleAnnouncements.length + Number(hasAppUpdate);
+
+  const clearNotifications = async () => {
+    if (!notificationStorageKey || !notificationUserId || isLoadingDismissedNotifications) {
+      Alert.alert('Could not clear notifications', 'Notification settings are not ready. Please try again.');
+      return;
+    }
+
+    const nextDismissed = {
+      userId: notificationUserId,
+      announcementIds: Array.from(new Set([
+        ...dismissedForCurrentUser.announcementIds,
+        ...announcements.map(item => String(item.id))
+      ])),
+      releaseCodes: Array.from(new Set([
+        ...dismissedForCurrentUser.releaseCodes,
+        ...(hasAppUpdateAvailable && releaseCode ? [releaseCode] : [])
+      ]))
+    };
+    try {
+      await AsyncStorage.setItem(notificationStorageKey, JSON.stringify({
+        announcementIds: nextDismissed.announcementIds,
+        releaseCodes: nextDismissed.releaseCodes
+      }));
+      setDismissedNotifications(nextDismissed);
+    } catch (error) {
+      console.error('[Notifications] Could not clear dismissed items:', error);
+      Alert.alert('Could not clear notifications', 'Your notifications could not be cleared on this device. Please try again.');
+    }
+  };
 
   // Pick Custom Avatar Photo
   const handlePickAvatar = async () => {
@@ -270,16 +364,31 @@ export default function MeProfileScreen({
       <View style={styles.header}>
         <View>
           <Text style={styles.headerEyebrow}>PMC LEELA</Text>
-          <Text style={styles.headerTitle}>Your account</Text>
+          <Text style={styles.headerTitle}>Your profile</Text>
         </View>
-        <TouchableOpacity
-          style={styles.settingsIcon}
-          onPress={() => setShowSettingsModal(true)}
-          accessibilityRole="button"
-          accessibilityLabel="Account settings"
-        >
-          <Ionicons name="settings-outline" size={21} color="#dbe4f0" />
-        </TouchableOpacity>
+        <View style={styles.headerActions}>
+          <TouchableOpacity
+            style={styles.headerIconButton}
+            onPress={() => setShowNotifications(true)}
+            accessibilityRole="button"
+            accessibilityLabel={`Notifications${notificationCount ? `, ${notificationCount} available` : ''}`}
+          >
+            <Ionicons name="notifications-outline" size={21} color="#f472b6" />
+            {notificationCount > 0 && (
+              <View style={styles.notificationBadge}>
+                <Text style={styles.notificationBadgeText}>{notificationCount > 9 ? '9+' : notificationCount}</Text>
+              </View>
+            )}
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.headerIconButton}
+            onPress={() => setShowSettingsModal(true)}
+            accessibilityRole="button"
+            accessibilityLabel="Account settings"
+          >
+            <Ionicons name="settings-outline" size={21} color="#cbd5e1" />
+          </TouchableOpacity>
+        </View>
       </View>
 
       <View style={styles.profileHero}>
@@ -299,7 +408,7 @@ export default function MeProfileScreen({
 
           <View style={styles.profileIdentity}>
             <View style={styles.memberBadge}>
-              <Ionicons name="checkmark-circle" size={13} color="#6ee7b7" />
+              <Ionicons name="checkmark-circle" size={13} color="#f472b6" />
               <Text style={styles.memberBadgeText}>MANIT STUDENT</Text>
             </View>
             <Text style={styles.displayName} numberOfLines={2}>
@@ -332,16 +441,12 @@ export default function MeProfileScreen({
           <Text style={styles.sectionDescription}>Only used for account verification</Text>
         </View>
         <View style={styles.privateStatus}>
-          <Ionicons name="lock-closed" size={12} color="#6ee7b7" />
+          <Ionicons name="lock-closed" size={12} color="#f472b6" />
           <Text style={styles.privateStatusText}>PRIVATE</Text>
         </View>
       </View>
 
       <View style={styles.privateCard}>
-        <View style={styles.privateDetailRow}>
-          <Text style={styles.privateLabel}>Legal name</Text>
-          <Text style={styles.privateValue} numberOfLines={1}>{currentUser?.fullName || 'MANIT Student'}</Text>
-        </View>
         {currentUser?.scholarNo ? (
           <View style={styles.privateDetailRow}>
             <Text style={styles.privateLabel}>Scholar number</Text>
@@ -355,63 +460,12 @@ export default function MeProfileScreen({
           </View>
         ) : null}
         <View style={styles.privateNotice}>
-          <Ionicons name="shield-checkmark-outline" size={16} color="#6ee7b7" />
+          <Ionicons name="shield-checkmark-outline" size={16} color="#f472b6" />
           <Text style={styles.privateFooterNote}>
             Your personal details are not shown to other students.
           </Text>
         </View>
       </View>
-
-      {(hasAppUpdate || announcements.length > 0) && (
-        <View style={styles.announcementSection}>
-          <View style={styles.sectionHeadingRow}>
-            <View>
-              <Text style={styles.sectionTitle}>Updates & announcements</Text>
-              <Text style={styles.sectionDescription}>Messages from the PMC team</Text>
-            </View>
-            <Ionicons name="notifications-outline" size={19} color="#f0a2cc" />
-          </View>
-
-          {hasAppUpdate && (
-            <View style={styles.updateCard}>
-              <View style={styles.updateHeading}>
-                <View style={styles.updateIcon}>
-                  <Ionicons name="arrow-up-circle-outline" size={21} color="#f9a8d4" />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.updateTitle}>Version {appRelease.versionName} is available</Text>
-                  <Text style={styles.announcementDate}>Current version {Constants.expoConfig?.version || 'installed'}</Text>
-                </View>
-              </View>
-              {appRelease.notes ? <Text style={styles.announcementMessage}>{appRelease.notes}</Text> : null}
-              <TouchableOpacity
-                style={styles.updateButton}
-                onPress={installUpdate}
-                disabled={isDownloadingUpdate}
-                activeOpacity={0.85}
-              >
-                {isDownloadingUpdate
-                  ? <ActivityIndicator color="#fff" />
-                  : <>
-                      <Ionicons name="download-outline" size={17} color="#fff" />
-                      <Text style={styles.updateButtonText}>Download update</Text>
-                    </>}
-              </TouchableOpacity>
-              <Text style={styles.installNote}>Android will ask you to confirm installation.</Text>
-            </View>
-          )}
-
-          {announcements.slice(0, 5).map(item => (
-            <View key={item.id} style={styles.announcementCard}>
-              <Text style={styles.updateTitle}>{item.title}</Text>
-              <Text style={styles.announcementMessage}>{item.message}</Text>
-              <Text style={styles.announcementDate}>
-                {item.createdAt ? new Date(item.createdAt).toLocaleString() : 'PMC announcement'}
-              </Text>
-            </View>
-          ))}
-        </View>
-      )}
 
       <View style={styles.menuSection}>
         <Text style={styles.sectionTitle}>Preferences & safety</Text>
@@ -459,6 +513,113 @@ export default function MeProfileScreen({
         <Ionicons name="log-out-outline" size={18} color="#fda4af" style={{ marginRight: 9 }} />
         <Text style={styles.logoutButtonText}>Sign out</Text>
       </TouchableOpacity>
+
+      <Modal
+        visible={showNotifications}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowNotifications(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.notificationCard}>
+            <View style={styles.modalHeader}>
+              <View style={styles.notificationHeaderText}>
+                <Text style={styles.modalTitle}>Notifications</Text>
+                <Text style={styles.notificationSubtitle}>Updates and messages from PMC</Text>
+              </View>
+              <View style={styles.notificationHeaderActions}>
+                {notificationCount > 0 && (
+                  <TouchableOpacity
+                    onPress={clearNotifications}
+                    disabled={isLoadingDismissedNotifications}
+                    accessibilityRole="button"
+                    accessibilityLabel="Clear all notifications for this account on this device"
+                    style={[
+                      styles.clearNotificationsButton,
+                      isLoadingDismissedNotifications && styles.disabledButton
+                    ]}
+                  >
+                    <Ionicons name="trash-outline" size={14} color="#f472b6" />
+                    <Text style={styles.clearNotificationsText}>Clear all</Text>
+                  </TouchableOpacity>
+                )}
+                <TouchableOpacity
+                  onPress={() => setShowNotifications(false)}
+                  accessibilityRole="button"
+                  accessibilityLabel="Close notifications"
+                  style={styles.closeButton}
+                >
+                  <Ionicons name="close" size={21} color="#cbd5e1" />
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            <ScrollView
+              style={styles.notificationList}
+              contentContainerStyle={styles.notificationListContent}
+              showsVerticalScrollIndicator={false}
+            >
+              {hasAppUpdate && (
+                <View style={styles.updateCard}>
+                  <View style={styles.updateHeading}>
+                    <View style={styles.updateIcon}>
+                      <Ionicons name="arrow-up-circle-outline" size={21} color="#f472b6" />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.updateTitle}>Version {appRelease.versionName} is available</Text>
+                      <Text style={styles.announcementDate}>
+                        Current version {Constants.expoConfig?.version || 'installed'}
+                      </Text>
+                    </View>
+                  </View>
+                  {appRelease.notes ? <Text style={styles.announcementMessage}>{appRelease.notes}</Text> : null}
+                  <TouchableOpacity
+                    style={styles.updateButton}
+                    onPress={installUpdate}
+                    disabled={isDownloadingUpdate}
+                    activeOpacity={0.85}
+                  >
+                    {isDownloadingUpdate
+                      ? <ActivityIndicator color="#fff" />
+                      : <>
+                          <Ionicons name="download-outline" size={17} color="#fff" />
+                          <Text style={styles.updateButtonText}>Download update</Text>
+                        </>}
+                  </TouchableOpacity>
+                  <Text style={styles.installNote}>Android will ask you to confirm installation.</Text>
+                </View>
+              )}
+
+              {visibleAnnouncements.map(item => (
+                <View key={item.id} style={styles.announcementCard}>
+                  <View style={styles.notificationItemHeading}>
+                    <View style={styles.notificationItemIcon}>
+                      <Ionicons name="megaphone-outline" size={16} color="#f472b6" />
+                    </View>
+                    <Text style={styles.updateTitle}>{item.title}</Text>
+                  </View>
+                  <Text style={styles.announcementMessage}>{item.message}</Text>
+                  <Text style={styles.announcementDate}>
+                    {item.createdAt ? new Date(item.createdAt).toLocaleString() : 'PMC announcement'}
+                  </Text>
+                </View>
+              ))}
+
+              {!hasAppUpdate && visibleAnnouncements.length === 0 && (
+                <View style={styles.emptyNotifications}>
+                  <View style={styles.emptyNotificationIcon}>
+                    <Ionicons name="notifications-off-outline" size={25} color="#f472b6" />
+                  </View>
+                  <Text style={styles.emptyNotificationsTitle}>You're all caught up</Text>
+                  <Text style={styles.emptyNotificationsText}>
+                    New announcements and app updates will appear here.
+                  </Text>
+                </View>
+              )}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
 
       {/* Edit Anonymous Persona Modal */}
       <Modal visible={showEditPersonaModal} transparent animationType="fade">
@@ -565,11 +726,11 @@ export default function MeProfileScreen({
               </Text>
 
               <View style={styles.ruleHeading}>
-                <Ionicons name="lock-closed-outline" size={16} color="#6ee7b7" />
+                <Ionicons name="lock-closed-outline" size={16} color="#f472b6" />
                 <Text style={styles.modalRuleTitle}>Protect personal information</Text>
               </View>
               <Text style={styles.modalRuleText}>
-                Your real name, phone number, and scholar email are kept 100% confidential and are never revealed to other students.
+                Your phone number and scholar email are kept private and are never revealed to other students.
               </Text>
             </ScrollView>
 
@@ -586,49 +747,74 @@ export default function MeProfileScreen({
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#090b12'
+    backgroundColor: '#07080c'
   },
   content: {
-    paddingHorizontal: 22,
-    paddingTop: 52,
-    paddingBottom: 44
+    paddingHorizontal: 18,
+    paddingTop: 22,
+    paddingBottom: 36
   },
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 24
+    marginBottom: 20
+  },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10
   },
   headerEyebrow: {
-    color: '#8993a8',
+    color: '#94a3b8',
     fontSize: 10,
     fontWeight: '700',
     letterSpacing: 1.8,
     marginBottom: 5
   },
   headerTitle: {
-    color: '#f4f6fb',
-    fontSize: 28,
+    color: '#f8fafc',
+    fontSize: 27,
     fontWeight: '700',
     letterSpacing: -0.7
   },
-  settingsIcon: {
+  headerIconButton: {
+    position: 'relative',
     width: 42,
     height: 42,
-    borderRadius: 14,
-    backgroundColor: '#151925',
+    borderRadius: 13,
+    backgroundColor: '#0c0e17',
     borderWidth: 1,
-    borderColor: '#252b3a',
+    borderColor: '#252a36',
     justifyContent: 'center',
     alignItems: 'center'
   },
+  notificationBadge: {
+    position: 'absolute',
+    top: -5,
+    right: -5,
+    minWidth: 17,
+    height: 17,
+    borderRadius: 9,
+    paddingHorizontal: 4,
+    backgroundColor: '#ec4899',
+    borderWidth: 1.5,
+    borderColor: '#07080c',
+    justifyContent: 'center',
+    alignItems: 'center'
+  },
+  notificationBadgeText: {
+    color: '#fff',
+    fontSize: 9,
+    fontWeight: '800'
+  },
   profileHero: {
-    backgroundColor: '#121622',
-    borderRadius: 22,
+    backgroundColor: '#0c0e17',
+    borderRadius: 20,
     borderWidth: 1,
-    borderColor: '#252b3a',
+    borderColor: '#252a36',
     padding: 18,
-    marginBottom: 26
+    marginBottom: 24
   },
   profileHeroTop: {
     flexDirection: 'row',
@@ -645,17 +831,17 @@ const styles = StyleSheet.create({
   avatarImage: {
     width: 76,
     height: 76,
-    borderRadius: 24,
+    borderRadius: 25,
     borderWidth: 1.5,
-    borderColor: '#52506d'
+    borderColor: '#ec4899'
   },
   avatarPlaceholder: {
     width: 76,
     height: 76,
-    borderRadius: 24,
-    backgroundColor: '#1b2030',
+    borderRadius: 25,
+    backgroundColor: '#161926',
     borderWidth: 1.5,
-    borderColor: '#383c50',
+    borderColor: '#38303d',
     justifyContent: 'center',
     alignItems: 'center'
   },
@@ -663,22 +849,22 @@ const styles = StyleSheet.create({
     position: 'absolute',
     bottom: -5,
     right: -5,
-    backgroundColor: '#8b78e6',
+    backgroundColor: '#be185d',
     width: 25,
     height: 25,
     borderRadius: 9,
     justifyContent: 'center',
     alignItems: 'center',
     borderWidth: 2,
-    borderColor: '#121622'
+    borderColor: '#0c0e17'
   },
   memberBadge: {
     alignSelf: 'flex-start',
     flexDirection: 'row',
     alignItems: 'center',
     gap: 5,
-    backgroundColor: 'rgba(16, 185, 129, 0.09)',
-    borderColor: 'rgba(110, 231, 183, 0.18)',
+    backgroundColor: 'rgba(236, 72, 153, 0.10)',
+    borderColor: 'rgba(236, 72, 153, 0.24)',
     borderWidth: 1,
     paddingHorizontal: 8,
     paddingVertical: 4,
@@ -686,25 +872,25 @@ const styles = StyleSheet.create({
     marginBottom: 7
   },
   memberBadgeText: {
-    color: '#9fe5c8',
+    color: '#f9a8d4',
     fontSize: 9,
     fontWeight: '700',
     letterSpacing: 0.8
   },
   displayName: {
-    color: '#f4f6fb',
+    color: '#f8fafc',
     fontSize: 21,
     fontWeight: '700',
     letterSpacing: -0.35
   },
   anonymousTag: {
-    color: '#929bad',
+    color: '#94a3b8',
     fontSize: 12,
     marginTop: 3
   },
   profileDivider: {
     height: 1,
-    backgroundColor: '#272c3a',
+    backgroundColor: '#252a36',
     marginTop: 19,
     marginBottom: 15
   },
@@ -719,18 +905,18 @@ const styles = StyleSheet.create({
   profileMetaDivider: {
     width: 1,
     height: 29,
-    backgroundColor: '#303545',
+    backgroundColor: '#303442',
     marginHorizontal: 14
   },
   profileMetaLabel: {
-    color: '#818a9e',
+    color: '#94a3b8',
     fontSize: 9,
     fontWeight: '700',
     letterSpacing: 0.9,
     marginBottom: 5
   },
   profileMetaValue: {
-    color: '#e3e7f0',
+    color: '#e2e8f0',
     fontSize: 12,
     fontWeight: '600'
   },
@@ -741,13 +927,13 @@ const styles = StyleSheet.create({
     marginBottom: 12
   },
   sectionTitle: {
-    color: '#e9ecf4',
+    color: '#f1f5f9',
     fontSize: 16,
     fontWeight: '700',
     letterSpacing: -0.15
   },
   sectionDescription: {
-    color: '#858ea2',
+    color: '#94a3b8',
     fontSize: 11.5,
     marginTop: 4
   },
@@ -755,41 +941,38 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     flexDirection: 'row',
     gap: 5,
-    backgroundColor: 'rgba(16, 185, 129, 0.08)',
+    backgroundColor: 'rgba(236, 72, 153, 0.08)',
     borderRadius: 8,
     paddingHorizontal: 8,
     paddingVertical: 6
   },
   privateStatusText: {
-    color: '#9fe5c8',
+    color: '#f9a8d4',
     fontSize: 9,
     fontWeight: '700',
     letterSpacing: 0.6
   },
   privateCard: {
-    backgroundColor: '#11151f',
+    backgroundColor: '#0c0e17',
     borderRadius: 16,
     borderWidth: 1,
-    borderColor: '#252c38',
+    borderColor: '#252a36',
     padding: 16,
     marginBottom: 27
   },
-  announcementSection: {
-    marginBottom: 25
-  },
   announcementCard: {
-    backgroundColor: '#11151f',
+    backgroundColor: '#11131d',
     borderRadius: 16,
     borderWidth: 1,
-    borderColor: '#252c38',
+    borderColor: '#252a36',
     padding: 15,
     marginBottom: 10
   },
   updateCard: {
-    backgroundColor: '#171423',
+    backgroundColor: '#17101a',
     borderRadius: 17,
     borderWidth: 1,
-    borderColor: 'rgba(244, 114, 182, 0.28)',
+    borderColor: 'rgba(236, 72, 153, 0.30)',
     padding: 16,
     marginBottom: 10
   },
@@ -805,21 +988,21 @@ const styles = StyleSheet.create({
     borderRadius: 13,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(244, 114, 182, 0.11)'
+    backgroundColor: 'rgba(236, 72, 153, 0.13)'
   },
   updateTitle: {
-    color: '#f1eaf2',
+    color: '#f8fafc',
     fontSize: 13,
     fontWeight: '700'
   },
   announcementMessage: {
-    color: '#c1c5d0',
+    color: '#cbd5e1',
     fontSize: 12,
     lineHeight: 18,
     marginTop: 8
   },
   announcementDate: {
-    color: '#818a9e',
+    color: '#94a3b8',
     fontSize: 10,
     marginTop: 7
   },
@@ -829,7 +1012,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
-    backgroundColor: '#db2777',
+    backgroundColor: '#be185d',
     borderRadius: 12,
     marginTop: 14
   },
@@ -850,14 +1033,14 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingVertical: 9,
     borderBottomWidth: 1,
-    borderBottomColor: '#202531'
+    borderBottomColor: '#252a36'
   },
   privateLabel: {
-    color: '#929bad',
+    color: '#94a3b8',
     fontSize: 12
   },
   privateValue: {
-    color: '#e4e8f0',
+    color: '#e2e8f0',
     fontSize: 12,
     fontWeight: '600',
     maxWidth: '58%',
@@ -870,7 +1053,7 @@ const styles = StyleSheet.create({
     marginTop: 13
   },
   privateFooterNote: {
-    color: '#9ba5b7',
+    color: '#94a3b8',
     fontSize: 11,
     lineHeight: 16,
     flex: 1
@@ -881,13 +1064,13 @@ const styles = StyleSheet.create({
   menuItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#121622',
+    backgroundColor: '#0c0e17',
     paddingHorizontal: 14,
     paddingVertical: 14,
     borderRadius: 15,
     marginTop: 10,
     borderWidth: 1,
-    borderColor: '#252b39'
+    borderColor: '#252a36'
   },
   menuIconBox: {
     width: 39,
@@ -897,18 +1080,18 @@ const styles = StyleSheet.create({
     alignItems: 'center'
   },
   personaIconBox: {
-    backgroundColor: 'rgba(244, 114, 182, 0.11)'
+    backgroundColor: 'rgba(236, 72, 153, 0.12)'
   },
   safetyIconBox: {
     backgroundColor: 'rgba(96, 165, 250, 0.11)'
   },
   menuTitle: {
-    color: '#e7eaf2',
+    color: '#f1f5f9',
     fontSize: 13,
     fontWeight: '600'
   },
   menuSubtitle: {
-    color: '#8f98aa',
+    color: '#94a3b8',
     fontSize: 11.5,
     marginTop: 4
   },
@@ -918,7 +1101,7 @@ const styles = StyleSheet.create({
     gap: 3
   },
   editActionText: {
-    color: '#f0a2cc',
+    color: '#f472b6',
     fontSize: 12,
     fontWeight: '700'
   },
@@ -926,9 +1109,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#11141c',
+    backgroundColor: '#0c0e17',
     borderWidth: 1,
-    borderColor: '#2c2932',
+    borderColor: '#33232f',
     paddingVertical: 15,
     borderRadius: 14
   },
@@ -939,13 +1122,109 @@ const styles = StyleSheet.create({
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.85)',
+    backgroundColor: 'rgba(0,0,0,0.82)',
     justifyContent: 'center',
     alignItems: 'center',
     padding: 20
   },
+  notificationCard: {
+    backgroundColor: '#0c0e17',
+    width: '100%',
+    height: '82%',
+    maxHeight: '88%',
+    borderRadius: 20,
+    padding: 18,
+    borderWidth: 1,
+    borderColor: '#292532'
+  },
+  notificationHeaderText: {
+    flex: 1,
+    marginRight: 10
+  },
+  notificationHeaderActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8
+  },
+  notificationSubtitle: {
+    color: '#94a3b8',
+    fontSize: 11,
+    marginTop: 4
+  },
+  clearNotificationsButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    minHeight: 36,
+    paddingHorizontal: 10,
+    borderRadius: 11,
+    backgroundColor: 'rgba(236, 72, 153, 0.10)',
+    borderWidth: 1,
+    borderColor: 'rgba(236, 72, 153, 0.20)'
+  },
+  clearNotificationsText: {
+    color: '#f472b6',
+    fontSize: 11,
+    fontWeight: '700'
+  },
+  disabledButton: {
+    opacity: 0.5
+  },
+  closeButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 12,
+    backgroundColor: '#161926',
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  notificationList: {
+    flex: 1
+  },
+  notificationListContent: {
+    paddingBottom: 2
+  },
+  notificationItemHeading: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 9
+  },
+  notificationItemIcon: {
+    width: 29,
+    height: 29,
+    borderRadius: 10,
+    backgroundColor: 'rgba(236, 72, 153, 0.12)',
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  emptyNotifications: {
+    alignItems: 'center',
+    paddingHorizontal: 18,
+    paddingVertical: 34
+  },
+  emptyNotificationIcon: {
+    width: 56,
+    height: 56,
+    borderRadius: 18,
+    backgroundColor: 'rgba(236, 72, 153, 0.12)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 14
+  },
+  emptyNotificationsTitle: {
+    color: '#f1f5f9',
+    fontSize: 15,
+    fontWeight: '700'
+  },
+  emptyNotificationsText: {
+    color: '#94a3b8',
+    fontSize: 12,
+    lineHeight: 18,
+    textAlign: 'center',
+    marginTop: 6
+  },
   settingsCard: {
-    backgroundColor: '#121524',
+    backgroundColor: '#0c0e17',
     width: '100%',
     borderRadius: 20,
     padding: 20,

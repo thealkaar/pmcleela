@@ -27,7 +27,10 @@ const server = http.createServer(app);
 
 function publicUser(user) {
   if (!user) return user;
-  const { password, passwordHash, ...safeUser } = user;
+  const safeUser = { ...user };
+  delete safeUser.password;
+  delete safeUser.passwordHash;
+  delete safeUser.fullName;
   return safeUser;
 }
 
@@ -214,9 +217,8 @@ app.get('/api/admin/users', requireAdmin, async (req, res) => {
 
 app.post('/api/admin/users', requireAdmin, async (req, res) => {
   try {
-    const { fullName, phone, email, password, gender, hostel, anonymousName, academicYear } = req.body || {};
+    const { phone, email, password, gender, hostel, anonymousName, academicYear } = req.body || {};
     if (
-      typeof fullName !== 'string' ||
       typeof email !== 'string' ||
       typeof password !== 'string' ||
       typeof anonymousName !== 'string' ||
@@ -224,14 +226,13 @@ app.post('/api/admin/users', requireAdmin, async (req, res) => {
     ) {
       return res.status(400).json({
         success: false,
-        message: 'Full name, MANIT email, campus name, and an initial password of at least 12 characters are required.'
+        message: 'MANIT email, campus name, and an initial password of at least 12 characters are required.'
       });
     }
     if (gender !== 'male' && gender !== 'female') {
       return res.status(400).json({ success: false, message: 'Choose a valid student gender.' });
     }
     const user = await db.registerVerifiedUser({
-      fullName,
       phone: typeof phone === 'string' ? phone : '',
       email,
       password,
@@ -434,7 +435,7 @@ app.post('/api/push/unregister', async (req, res) => {
 
 app.get('/api/announcements', async (req, res) => {
   try {
-    res.json({ success: true, data: await db.getAnnouncements(10) });
+    res.json({ success: true, data: await db.getAnnouncements() });
   } catch (error) {
     console.error('[Push] Failed to load announcements:', error);
     res.status(500).json({ success: false, message: 'Could not load announcements.' });
@@ -602,7 +603,7 @@ app.get('/api/health', async (req, res) => {
 // 1. STEP 1: SEND EMAIL OTP FOR VERIFICATION
 app.post('/api/auth/send-otp', async (req, res) => {
   try {
-    const { email, fullName, phone } = req.body;
+    const { email, phone } = req.body;
     
     // Validate student college email: must end with @stu.manit.ac.in
     const validation = db.validateManitEmail(email);
@@ -627,13 +628,12 @@ app.post('/api/auth/send-otp', async (req, res) => {
 
     // Store in DB OTP store
     db.saveOtp(validation.email, otp, {
-      fullName: (fullName || 'MANIT Student').trim(),
       phone: (phone || '').trim(),
       scholarNo: validation.scholarNo
     });
 
     // Send via Brevo Transactional Email Service
-    const emailResult = await sendOtpEmail(validation.email, otp, fullName || 'MANIT Scholar');
+    const emailResult = await sendOtpEmail(validation.email, otp);
 
     if (!emailResult.success && emailResult.error) {
       return res.status(500).json({
@@ -657,7 +657,7 @@ app.post('/api/auth/send-otp', async (req, res) => {
 // 2. STEP 2: VERIFY OTP AND REGISTER ACCOUNT
 app.post('/api/auth/verify-and-register', async (req, res) => {
   try {
-    const { email, otp, fullName, phone, password, gender, academicYear, hostel, anonymousName, avatarUrl } = req.body;
+    const { email, otp, phone, password, gender, academicYear, hostel, anonymousName, avatarUrl } = req.body;
     
     if (!email || !otp) {
       return res.status(400).json({
@@ -684,7 +684,6 @@ app.post('/api/auth/verify-and-register', async (req, res) => {
 
     // Register user
     const newUser = await db.registerVerifiedUser({
-      fullName: fullName || otpResult.studentData?.fullName || 'MANIT Student',
       phone: phone || otpResult.studentData?.phone || '',
       email,
       password,
@@ -710,7 +709,7 @@ app.post('/api/auth/verify-and-register', async (req, res) => {
 // 3. LEGACY / DIRECT REGISTER (Fallback with automatic validation)
 app.post('/api/auth/register', async (req, res) => {
   try {
-    const { email, password, fullName, phone, gender, academicYear, hostel, anonymousName, avatarUrl } = req.body;
+    const { email, password, phone, gender, academicYear, hostel, anonymousName, avatarUrl } = req.body;
     if (!email || !password || !gender || !anonymousName) {
       return res.status(400).json({
         success: false,
@@ -721,7 +720,6 @@ app.post('/api/auth/register', async (req, res) => {
     const newUser = await db.registerUser({
       email,
       password,
-      fullName,
       phone,
       gender,
       academicYear,

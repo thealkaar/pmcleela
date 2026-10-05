@@ -112,7 +112,6 @@ class PrismaDB {
   }
 
   async registerVerifiedUser({
-    fullName,
     phone,
     email,
     password,
@@ -140,7 +139,6 @@ class PrismaDB {
       id: `usr_${uuidv4().slice(0, 8)}`,
       email: validation.email,
       scholarNo: validation.scholarNo,
-      fullName: (fullName || 'MANIT Student').trim(),
       phone: (phone || '').trim(),
       gender: gender || 'male',
       academicYear: academicYear || this.getAcademicYearFromScholarNo(validation.scholarNo),
@@ -256,10 +254,10 @@ class PrismaDB {
     return this.client.pmcAnnouncement.create({ data: { id, title, message } });
   }
 
-  async getAnnouncements(limit = 20) {
+  async getAnnouncements(limit = null) {
     return this.client.pmcAnnouncement.findMany({
       orderBy: { createdAt: 'desc' },
-      take: limit
+      ...(limit == null ? {} : { take: limit })
     });
   }
 

@@ -39,6 +39,34 @@ const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const REEL_HEIGHT = SCREEN_HEIGHT - 65;
 const MAX_REEL_DURATION_SECONDS = 40;
 
+function shuffleReelsByDay(reels) {
+  const seenIds = new Set();
+  const reelsByDay = new Map();
+
+  for (const reel of reels) {
+    if (reel?.id == null || seenIds.has(String(reel.id))) continue;
+    seenIds.add(String(reel.id));
+
+    const createdAt = new Date(reel.createdAt);
+    const dayStart = Number.isNaN(createdAt.getTime())
+      ? 0
+      : new Date(createdAt.getFullYear(), createdAt.getMonth(), createdAt.getDate()).getTime();
+    const dayReels = reelsByDay.get(dayStart) || [];
+    dayReels.push(reel);
+    reelsByDay.set(dayStart, dayReels);
+  }
+
+  return Array.from(reelsByDay.entries())
+    .sort(([dayA], [dayB]) => dayB - dayA)
+    .flatMap(([, dayReels]) => {
+      for (let index = dayReels.length - 1; index > 0; index -= 1) {
+        const swapIndex = Math.floor(Math.random() * (index + 1));
+        [dayReels[index], dayReels[swapIndex]] = [dayReels[swapIndex], dayReels[index]];
+      }
+      return dayReels;
+    });
+}
+
 // Fullscreen WhatsApp-Style Slide & Trim Story Editor Component
 function VideoStoryEditor({
   videoUri,
@@ -585,11 +613,18 @@ async function uploadVideoFile(url, uri, fields, onProgress, onStarted) {
   }
 }
 
-export default function LeelaReelsScreen({ serverHost, currentUser, isTabActive = true }) {
+export default function LeelaReelsScreen({
+  serverHost,
+  currentUser,
+  isTabActive = true,
+  reelIdToOpen = null,
+  onReelOpened
+}) {
   const [reels, setReels] = useState([]);
   const [activeReelIndex, setActiveReelIndex] = useState(0);
   const [isMuted, setIsMuted] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [reelsFetchFailed, setReelsFetchFailed] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [reelHeight, setReelHeight] = useState(REEL_HEIGHT);
 
@@ -617,6 +652,7 @@ export default function LeelaReelsScreen({ serverHost, currentUser, isTabActive 
   const [selectedVideoUri, setSelectedVideoUri] = useState(null);
   const [publishSuccessVisible, setPublishSuccessVisible] = useState(false);
   const isTabActiveRef = useRef(isTabActive);
+  const reelsListRef = useRef(null);
 
   useEffect(() => {
     isTabActiveRef.current = isTabActive;
@@ -631,10 +667,11 @@ export default function LeelaReelsScreen({ serverHost, currentUser, isTabActive 
       if (!res.ok || !data.success) {
         throw new Error(data.message || 'Could not load reels.');
       }
-      if (Array.isArray(data.data)) {
-        setReels(data.data);
-      }
+      if (!Array.isArray(data.data)) throw new Error('Could not load reels.');
+      setReels(shuffleReelsByDay(data.data));
+      setReelsFetchFailed(false);
     } catch (err) {
+      setReelsFetchFailed(true);
       console.log('Error fetching reels from server:', err.message);
     } finally {
       setLoading(false);
@@ -646,8 +683,25 @@ export default function LeelaReelsScreen({ serverHost, currentUser, isTabActive 
     fetchReels();
   }, [serverHost, currentUser?.id]);
 
+  useEffect(() => {
+    if (!reelIdToOpen || loading || refreshing) return;
+
+    const reelIndex = reels.findIndex((reel) => reel.id === reelIdToOpen);
+    if (reelsFetchFailed) {
+      Alert.alert('Could not open reel', 'Could not load reels. Check your connection and try again.');
+    } else if (reelIndex === -1) {
+      Alert.alert('Reel unavailable', 'This reel is no longer available.');
+    } else {
+      setActiveReelIndex(reelIndex);
+      reelsListRef.current?.scrollToIndex({ index: reelIndex, animated: false });
+    }
+    onReelOpened?.(reelIdToOpen);
+  }, [loading, onReelOpened, reelIdToOpen, reels, reelsFetchFailed, refreshing]);
+
   const handleRefresh = () => {
     setRefreshing(true);
+    setActiveReelIndex(0);
+    reelsListRef.current?.scrollToOffset({ offset: 0, animated: false });
     fetchReels();
   };
 
@@ -800,8 +854,10 @@ export default function LeelaReelsScreen({ serverHost, currentUser, isTabActive 
 
   const handleShare = async (reel) => {
     try {
+      const reelUrl = `pmcleela://reel/${encodeURIComponent(reel.id)}`;
       await Share.share({
-        message: `Watch "${reel.caption}" on Leela!`
+        message: `Watch "${reel.caption || 'this reel'}" on Leela!\n${reelUrl}`,
+        url: reelUrl
       });
     } catch (err) {
       console.log('Share error:', err);
@@ -1024,6 +1080,7 @@ export default function LeelaReelsScreen({ serverHost, currentUser, isTabActive 
         </View>
       ) : (
         <FlatList
+          ref={reelsListRef}
           data={reels}
           keyExtractor={(item) => item.id}
           pagingEnabled

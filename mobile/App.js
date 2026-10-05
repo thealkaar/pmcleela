@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { StyleSheet, View, Text, TouchableOpacity, Platform, ActivityIndicator, Animated, Easing } from 'react-native';
+import { StyleSheet, View, Text, TouchableOpacity, Platform, ActivityIndicator, Animated, Easing, Linking } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -15,6 +15,13 @@ import { DEFAULT_HOST, getBaseUrl } from './src/config';
 
 const USER_STORAGE_KEY = '@pmc_leela_current_user';
 const PUSH_TOKEN_STORAGE_KEY = '@pmc_leela_push_token';
+
+function withoutRealName(user) {
+  if (!user) return user;
+  const sanitizedUser = { ...user };
+  delete sanitizedUser.fullName;
+  return sanitizedUser;
+}
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -57,6 +64,7 @@ function AppContent() {
   const [currentUser, setCurrentUser] = useState(null);
   const [isInitializing, setIsInitializing] = useState(true);
   const [currentTab, setCurrentTab] = useState('pmc'); // 'pmc' | 'leela' | 'me'
+  const [pendingReelId, setPendingReelId] = useState(null);
   const [serverHost, setServerHost] = useState(DEFAULT_HOST);
   const [activeChatPartner, setActiveChatPartner] = useState(null);
   const tabTransitionOpacity = React.useRef(new Animated.Value(1)).current;
@@ -68,6 +76,42 @@ function AppContent() {
       setCurrentTab('me');
     });
     return () => responseListener.remove();
+  }, []);
+
+  const handleIncomingUrl = React.useCallback((url) => {
+    const match = url.match(/^pmcleela:\/\/reel\/([^/?#]+)\/?$/i);
+    if (!match) return;
+
+    let reelId;
+    try {
+      reelId = decodeURIComponent(match[1]);
+    } catch (error) {
+      console.warn('[Deep link] Invalid reel ID in shared URL:', error.message);
+      return;
+    }
+    if (!reelId) return;
+
+    setPendingReelId(reelId);
+    setCurrentTab('leela');
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    Linking.getInitialURL()
+      .then((url) => {
+        if (active && url) handleIncomingUrl(url);
+      })
+      .catch((error) => console.warn('[Deep link] Could not read launch URL:', error.message));
+
+    const subscription = Linking.addEventListener('url', ({ url }) => handleIncomingUrl(url));
+    return () => {
+      active = false;
+      subscription.remove();
+    };
+  }, [handleIncomingUrl]);
+
+  const handleReelOpened = React.useCallback((reelId) => {
+    setPendingReelId((currentReelId) => currentReelId === reelId ? null : currentReelId);
   }, []);
 
   const switchTab = (tab) => {
@@ -109,7 +153,7 @@ function AppContent() {
       try {
         const stored = await AsyncStorage.getItem(USER_STORAGE_KEY);
         if (stored) {
-          const parsed = deriveYear(JSON.parse(stored));
+          const parsed = deriveYear(withoutRealName(JSON.parse(stored)));
           setCurrentUser(parsed);
           await AsyncStorage.setItem(USER_STORAGE_KEY, JSON.stringify(parsed));
         }
@@ -171,7 +215,7 @@ function AppContent() {
   }, [currentUser?.id, serverHost]);
 
   const handleLoginSuccess = async (user) => {
-    const fixedUser = deriveYear(user);
+    const fixedUser = deriveYear(withoutRealName(user));
     setCurrentUser(fixedUser);
     try {
       await AsyncStorage.setItem(USER_STORAGE_KEY, JSON.stringify(fixedUser));
@@ -237,7 +281,7 @@ function AppContent() {
   if (!currentUser) {
     return (
       <Animated.View style={{ flex: 1, opacity: interfaceTransitionOpacity }}>
-      <SafeAreaView style={styles.safeArea} edges={Platform.OS === 'android' ? ['bottom'] : ['top', 'bottom']}>
+      <SafeAreaView style={styles.safeArea} edges={['top', 'bottom']}>
         <StatusBar style="light" />
         <LoginScreen
           serverHost={serverHost}
@@ -250,7 +294,7 @@ function AppContent() {
 
   return (
     <Animated.View style={{ flex: 1, opacity: interfaceTransitionOpacity }}>
-    <SafeAreaView style={styles.safeArea} edges={Platform.OS === 'android' ? ['bottom'] : ['top', 'bottom']}>
+    <SafeAreaView style={styles.safeArea} edges={['top', 'bottom']}>
       <StatusBar style="light" />
 
       {/* Floating Active Chat Banner if user is browsing Reels or Me while chatting */}
@@ -295,6 +339,8 @@ function AppContent() {
             serverHost={serverHost}
             currentUser={currentUser}
             isTabActive={currentTab === 'leela'}
+            reelIdToOpen={pendingReelId}
+            onReelOpened={handleReelOpened}
           />
         </View>
 
@@ -396,8 +442,7 @@ function AppContent() {
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: '#07080c',
-    paddingTop: Platform.OS === 'android' ? 30 : 0
+    backgroundColor: '#07080c'
   },
   floatingActiveBanner: {
     flexDirection: 'row',

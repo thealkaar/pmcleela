@@ -6,10 +6,9 @@
  * Send 6-Digit OTP Email to MANIT student email via Brevo
  * @param {string} toEmail - Student college email (scholarNO@stu.manit.ac.in)
  * @param {string} otp - 6-digit numeric OTP code
- * @param {string} studentName - Student's name (optional)
  * @returns {Promise<{ success: boolean, messageId?: string, error?: string }>}
  */
-async function sendOtpEmail(toEmail, otp, studentName = 'MANITian') {
+async function sendOtpEmail(toEmail, otp) {
   const brevoApiKey = process.env.BREVO_API_KEY || '';
   const fromEmail = process.env.FROM_EMAIL || 'pmcleelaofficial@gmail.com';
   const fromName = process.env.FROM_NAME || 'PMC Leela';
@@ -46,7 +45,7 @@ async function sendOtpEmail(toEmail, otp, studentName = 'MANITian') {
           <p>MANIT Bhopal • Campus Identity Verification</p>
         </div>
         <div class="content">
-          <div class="greeting">Hello ${studentName || 'MANITian'},</div>
+          <div class="greeting">Hello MANIT student,</div>
           <div class="text">
             Welcome to <strong>पी एम सी Leela</strong>. To ensure a safe, authentic, and verified community for MANIT students, please enter this OTP in the app:
           </div>
@@ -60,7 +59,7 @@ async function sendOtpEmail(toEmail, otp, studentName = 'MANITian') {
           <div class="safety-note">
             <div class="safety-title">🛡️ Strict Anonymity & Safety Guarantee</div>
             <p class="safety-text">
-              Your real name, phone number, and official college email are strictly stored for campus authenticity & safety. <strong>They are never revealed to other students</strong>. Only your anonymous persona is shown.
+              Your real name is not requested. Your phone number and official college email are used for campus authenticity & safety and are never revealed to other students. Only your campus persona is shown.
             </p>
           </div>
 
@@ -111,8 +110,7 @@ async function sendOtpEmail(toEmail, otp, studentName = 'MANITian') {
         },
         to: [
           {
-            email: toEmail,
-            name: studentName || 'MANIT Student'
+            email: toEmail
           }
         ],
         subject: `[${otp}] पी एम सी Leela - Your MANIT Email Verification Code`,

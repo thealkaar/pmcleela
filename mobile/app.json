@@ -2,6 +2,7 @@
   "expo": {
     "name": "PMC Leela",
     "slug": "mobile",
+    "scheme": "pmcleela",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",

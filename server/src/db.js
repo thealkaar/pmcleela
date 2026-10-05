@@ -191,7 +191,7 @@ class LocalDB {
     this.otpStore.delete(cleanEmail);
   }
 
-  registerVerifiedUser({ fullName, phone, email, password, gender, hostel, anonymousName, avatarUrl, academicYear }) {
+  registerVerifiedUser({ phone, email, password, gender, hostel, anonymousName, avatarUrl, academicYear }) {
     const validation = this.validateManitEmail(email);
     if (!validation.valid) {
       throw new Error(validation.message);
@@ -210,7 +210,6 @@ class LocalDB {
       id: `usr_${uuidv4().slice(0, 8)}`,
       email: validation.email,
       scholarNo: validation.scholarNo,
-      fullName: (fullName || 'MANIT Student').trim(),
       phone: (phone || '').trim(),
       password: (password || '').trim(),
       gender: gender || 'male',
@@ -496,8 +495,8 @@ class LocalDB {
     return announcement;
   }
 
-  getAnnouncements(limit = 20) {
-    return this.announcements.slice(0, limit);
+  getAnnouncements(limit = null) {
+    return limit == null ? this.announcements : this.announcements.slice(0, limit);
   }
 
   addAppRelease(release) {
