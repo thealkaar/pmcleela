@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "PMC Leela",
+    "name": "PMC लीला",
     "slug": "mobile",
     "scheme": "pmcleela",
     "version": "1.0.0",
@@ -14,6 +14,23 @@
       "package": "com.pmcleela.app",
       "versionCode": 1,
       "softwareKeyboardLayoutMode": "resize",
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "autoVerify": true,
+          "data": [
+            {
+              "scheme": "https",
+              "host": "pmcleela.onrender.com",
+              "pathPrefix": "/reel"
+            }
+          ],
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ]
+        }
+      ],
       "permissions": [
         "REQUEST_INSTALL_PACKAGES"
       ],
@@ -35,7 +52,8 @@
         {
           "defaultChannel": "announcements"
         }
-      ]
+      ],
+      "expo-secure-store"
     ],
     "extra": {
       "eas": {

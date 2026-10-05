@@ -1,36 +1,33 @@
 import React, { useState, useEffect } from 'react';
-import { StyleSheet, View, Text, TouchableOpacity, Platform, ActivityIndicator, Animated, Easing, Linking } from 'react-native';
+import { StyleSheet, View, Text, TouchableOpacity, Platform, ActivityIndicator, Animated, Easing, Keyboard, Linking, Alert } from 'react-native';
+import { isRunningInExpoGo } from 'expo';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as SecureStore from 'expo-secure-store';
 import * as Device from 'expo-device';
 import Constants from 'expo-constants';
-import * as Notifications from 'expo-notifications';
 import { Ionicons } from '@expo/vector-icons';
 import LoginScreen from './src/screens/LoginScreen';
 import PmcChatScreen from './src/screens/PmcChatScreen';
 import LeelaReelsScreen from './src/screens/LeelaReelsScreen';
 import MeProfileScreen from './src/screens/MeProfileScreen';
-import { DEFAULT_HOST, getBaseUrl } from './src/config';
+import { DEFAULT_HOST, getBaseUrl, REEL_SHARE_BASE_URL } from './src/config';
 
 const USER_STORAGE_KEY = '@pmc_leela_current_user';
+const AUTH_TOKEN_STORAGE_KEY = 'pmc_leela_student_session';
 const PUSH_TOKEN_STORAGE_KEY = '@pmc_leela_push_token';
 
-function withoutRealName(user) {
+function sanitizeUserProfile(user) {
   if (!user) return user;
   const sanitizedUser = { ...user };
   delete sanitizedUser.fullName;
+  delete sanitizedUser.avatarUri;
+  if (sanitizedUser.avatarUrl && !/^https?:\/\//i.test(sanitizedUser.avatarUrl)) {
+    delete sanitizedUser.avatarUrl;
+  }
   return sanitizedUser;
 }
-
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowBanner: true,
-    shouldShowList: true,
-    shouldPlaySound: true,
-    shouldSetBadge: false
-  })
-});
 
 const deriveYear = (user) => {
   if (!user) return user;
@@ -62,29 +59,100 @@ export default function App() {
 
 function AppContent() {
   const [currentUser, setCurrentUser] = useState(null);
+  const [authToken, setAuthToken] = useState(null);
   const [isInitializing, setIsInitializing] = useState(true);
   const [currentTab, setCurrentTab] = useState('pmc'); // 'pmc' | 'leela' | 'me'
   const [pendingReelId, setPendingReelId] = useState(null);
+  const [notificationOpenRequest, setNotificationOpenRequest] = useState(0);
+  const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
   const [serverHost, setServerHost] = useState(DEFAULT_HOST);
   const [activeChatPartner, setActiveChatPartner] = useState(null);
   const tabTransitionOpacity = React.useRef(new Animated.Value(1)).current;
   const tabTransitionId = React.useRef(0);
   const interfaceTransitionOpacity = React.useRef(new Animated.Value(0)).current;
+  const handledNotificationResponse = React.useRef(null);
 
   useEffect(() => {
-    const responseListener = Notifications.addNotificationResponseReceivedListener(() => {
+    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const showSubscription = Keyboard.addListener(showEvent, () => setIsKeyboardVisible(true));
+    const hideSubscription = Keyboard.addListener(hideEvent, () => setIsKeyboardVisible(false));
+    return () => {
+      showSubscription.remove();
+      hideSubscription.remove();
+    };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    let responseSubscription;
+    const openNotifications = (response) => {
+      const responseId = `${response.notification.request.identifier}:${response.actionIdentifier}`;
+      if (handledNotificationResponse.current === responseId) return;
+      handledNotificationResponse.current = responseId;
+
+      const notificationData = response.notification.request.content.data;
+      if (notificationData?.type === 'reel' && notificationData.reelId) {
+        setPendingReelId(String(notificationData.reelId));
+        setCurrentTab('leela');
+        return;
+      }
+
       setCurrentTab('me');
-    });
-    return () => responseListener.remove();
+      setNotificationOpenRequest((current) => current + 1);
+    };
+
+    if (Platform.OS === 'android' && isRunningInExpoGo()) {
+      return () => {
+        active = false;
+      };
+    }
+
+    import('expo-notifications')
+      .then(async (Notifications) => {
+        if (!active) return;
+        Notifications.setNotificationHandler({
+          handleNotification: async () => ({
+            shouldShowBanner: true,
+            shouldShowList: true,
+            shouldPlaySound: true,
+            shouldSetBadge: false
+          })
+        });
+        const response = await Notifications.getLastNotificationResponseAsync();
+        if (active && response) {
+          openNotifications(response);
+          await Notifications.clearLastNotificationResponseAsync();
+        }
+        if (active) {
+          responseSubscription = Notifications.addNotificationResponseReceivedListener(openNotifications);
+        }
+      })
+      .catch((error) => console.warn('[Notifications] Could not initialize notification handling:', error.message));
+    return () => {
+      active = false;
+      responseSubscription?.remove();
+    };
   }, []);
 
   const handleIncomingUrl = React.useCallback((url) => {
-    const match = url.match(/^pmcleela:\/\/reel\/([^/?#]+)\/?$/i);
-    if (!match) return;
-
+    const customSchemeMatch = url.match(/^pmcleela:\/\/reel\/([^/?#]+)\/?$/i);
+    let encodedReelId = customSchemeMatch?.[1];
+    if (!encodedReelId) {
+      try {
+        const parsedUrl = new URL(url);
+        const shareOrigin = new URL(REEL_SHARE_BASE_URL).origin;
+        if (parsedUrl.protocol !== 'https:' || parsedUrl.origin !== shareOrigin) return;
+        encodedReelId = parsedUrl.pathname.match(/^\/reel\/([^/]+)\/?$/i)?.[1];
+      } catch (error) {
+        console.warn('[Deep link] Invalid shared reel URL:', error.message);
+        return;
+      }
+    }
+    if (!encodedReelId) return;
     let reelId;
     try {
-      reelId = decodeURIComponent(match[1]);
+      reelId = decodeURIComponent(encodedReelId);
     } catch (error) {
       console.warn('[Deep link] Invalid reel ID in shared URL:', error.message);
       return;
@@ -112,6 +180,11 @@ function AppContent() {
 
   const handleReelOpened = React.useCallback((reelId) => {
     setPendingReelId((currentReelId) => currentReelId === reelId ? null : currentReelId);
+  }, []);
+
+  const handleOpenReel = React.useCallback((reelId) => {
+    setPendingReelId(reelId);
+    setCurrentTab('leela');
   }, []);
 
   const switchTab = (tab) => {
@@ -152,10 +225,14 @@ function AppContent() {
     async function loadSession() {
       try {
         const stored = await AsyncStorage.getItem(USER_STORAGE_KEY);
-        if (stored) {
-          const parsed = deriveYear(withoutRealName(JSON.parse(stored)));
+        const storedToken = await SecureStore.getItemAsync(AUTH_TOKEN_STORAGE_KEY);
+        if (stored && storedToken) {
+          const parsed = deriveYear(sanitizeUserProfile(JSON.parse(stored)));
+          setAuthToken(storedToken);
           setCurrentUser(parsed);
           await AsyncStorage.setItem(USER_STORAGE_KEY, JSON.stringify(parsed));
+        } else if (stored) {
+          await AsyncStorage.removeItem(USER_STORAGE_KEY);
         }
       } catch (err) {
         console.log('Error loading saved user session:', err);
@@ -169,8 +246,13 @@ function AppContent() {
   useEffect(() => {
     let cancelled = false;
     async function registerForPushNotifications() {
-      if (!currentUser?.id || Platform.OS === 'web' || !Device.isDevice) return;
+      if (!currentUser?.id || !authToken || Platform.OS === 'web' || !Device.isDevice) return;
+      if (Platform.OS === 'android' && isRunningInExpoGo()) {
+        console.info('[Push] Android remote push registration requires a development or production build; continuing without push in Expo Go.');
+        return;
+      }
       try {
+        const Notifications = await import('expo-notifications');
         if (Platform.OS === 'android') {
           await Notifications.setNotificationChannelAsync('announcements', {
             name: 'PMC announcements',
@@ -193,9 +275,11 @@ function AppContent() {
         await AsyncStorage.setItem(PUSH_TOKEN_STORAGE_KEY, tokenResult.data);
         const response = await fetch(`${getBaseUrl(serverHost)}/api/push/register`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${authToken}`
+          },
           body: JSON.stringify({
-            userId: currentUser.id,
             token: tokenResult.data,
             platform: Platform.OS
           })
@@ -212,15 +296,25 @@ function AppContent() {
     return () => {
       cancelled = true;
     };
-  }, [currentUser?.id, serverHost]);
+  }, [currentUser?.id, authToken, serverHost]);
 
-  const handleLoginSuccess = async (user) => {
-    const fixedUser = deriveYear(withoutRealName(user));
-    setCurrentUser(fixedUser);
+  const handleLoginSuccess = async (user, token) => {
+    if (!token) {
+      Alert.alert('Sign-in failed', 'The server did not provide a secure session. Please try again.');
+      return;
+    }
+    const fixedUser = deriveYear(sanitizeUserProfile(user));
     try {
+      await SecureStore.setItemAsync(AUTH_TOKEN_STORAGE_KEY, token);
       await AsyncStorage.setItem(USER_STORAGE_KEY, JSON.stringify(fixedUser));
+      setAuthToken(token);
+      setCurrentUser(fixedUser);
     } catch (err) {
-      console.log('Error saving user session:', err);
+      await SecureStore.deleteItemAsync(AUTH_TOKEN_STORAGE_KEY).catch((storageError) => {
+        console.error('Could not clear incomplete secure session:', storageError);
+      });
+      console.error('Error saving secure user session:', err);
+      Alert.alert('Sign-in could not be saved', 'Please check device storage and try signing in again.');
     }
   };
 
@@ -230,7 +324,10 @@ function AppContent() {
       try {
         await fetch(`${getBaseUrl(serverHost)}/api/push/unregister`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            ...(authToken ? { Authorization: `Bearer ${authToken}` } : {})
+          },
           body: JSON.stringify({ token: pushToken })
         });
       } catch (error) {
@@ -240,19 +337,22 @@ function AppContent() {
       }
     }).catch(error => console.warn('[Push] Could not read the saved device token:', error.message));
     setActiveChatPartner(null);
+    setAuthToken(null);
     setCurrentUser(null);
     setCurrentTab('pmc');
     try {
       await AsyncStorage.removeItem(USER_STORAGE_KEY);
+      await SecureStore.deleteItemAsync(AUTH_TOKEN_STORAGE_KEY);
     } catch (err) {
       console.log('Error removing user session:', err);
     }
   };
 
   const handleUpdateCurrentUser = async (updated) => {
-    setCurrentUser(updated);
+    const sanitizedUser = sanitizeUserProfile(updated);
+    setCurrentUser(sanitizedUser);
     try {
-      await AsyncStorage.setItem(USER_STORAGE_KEY, JSON.stringify(updated));
+      await AsyncStorage.setItem(USER_STORAGE_KEY, JSON.stringify(sanitizedUser));
     } catch (err) {
       console.log('Error updating user session:', err);
     }
@@ -260,10 +360,15 @@ function AppContent() {
 
   const handleDeleteAccount = async () => {
     setActiveChatPartner(null);
+    setAuthToken(null);
     setCurrentUser(null);
     setCurrentTab('pmc');
     try {
-      await AsyncStorage.removeItem(USER_STORAGE_KEY);
+      await Promise.all([
+        AsyncStorage.removeItem(USER_STORAGE_KEY),
+        SecureStore.deleteItemAsync(AUTH_TOKEN_STORAGE_KEY),
+        AsyncStorage.removeItem(PUSH_TOKEN_STORAGE_KEY)
+      ]);
     } catch (err) {
       console.log('Error clearing session after account deletion:', err);
     }
@@ -314,7 +419,7 @@ function AppContent() {
 
       {/* Keep screens mounted so chat never disconnects when switching tabs */}
       <Animated.View style={[styles.screensContainer, { opacity: tabTransitionOpacity }]}>
-        {/* Tab 1: पी एम सी (Piya Milan Chauraha) */}
+        {/* Tab 1: PMC */}
         <View
           style={[
             styles.screenWrapper,
@@ -324,6 +429,8 @@ function AppContent() {
           <PmcChatScreen
             serverHost={serverHost}
             currentUser={currentUser}
+            authToken={authToken}
+            isKeyboardVisible={isKeyboardVisible}
             onActiveChatChange={(partner) => setActiveChatPartner(partner)}
           />
         </View>
@@ -338,7 +445,9 @@ function AppContent() {
           <LeelaReelsScreen
             serverHost={serverHost}
             currentUser={currentUser}
+            authToken={authToken}
             isTabActive={currentTab === 'leela'}
+            isKeyboardVisible={isKeyboardVisible}
             reelIdToOpen={pendingReelId}
             onReelOpened={handleReelOpened}
           />
@@ -353,18 +462,21 @@ function AppContent() {
         >
           <MeProfileScreen
             currentUser={currentUser}
+            authToken={authToken}
             onUpdateCurrentUser={handleUpdateCurrentUser}
             onLogout={handleLogout}
             serverHost={serverHost}
             isTabActive={currentTab === 'me'}
+            notificationOpenRequest={notificationOpenRequest}
+            onOpenReel={handleOpenReel}
             onDeleteAccount={handleDeleteAccount}
           />
         </View>
       </Animated.View>
 
       {/* Luxury Bottom Navigation Bar */}
-      <View style={styles.tabBar}>
-        {/* Tab 1: पी एम सी */}
+      {!isKeyboardVisible && <View style={styles.tabBar}>
+        {/* Tab 1: PMC */}
         <TouchableOpacity
           style={styles.tabItem}
           onPress={() => switchTab('pmc')}
@@ -384,7 +496,7 @@ function AppContent() {
               currentTab === 'pmc' && styles.activeTabLabel
             ]}
           >
-            पी एम सी
+            PMC
           </Text>
         </TouchableOpacity>
 
@@ -433,7 +545,7 @@ function AppContent() {
             Me
           </Text>
         </TouchableOpacity>
-      </View>
+      </View>}
     </SafeAreaView>
     </Animated.View>
   );

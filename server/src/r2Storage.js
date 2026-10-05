@@ -12,6 +12,10 @@ const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 let clientInstance;
 
 function getConfig() {
+  if (process.env.PMC_LOCAL_MODE === '1') {
+    throw new Error('Cloudflare R2 access is disabled in local development mode.');
+  }
+
   const {
     R2_BUCKET_NAME,
     R2_ACCOUNT_ID,
@@ -38,7 +42,7 @@ function getConfig() {
 }
 
 function isConfigured() {
-  return getMissingConfig().length === 0;
+  return process.env.PMC_LOCAL_MODE !== '1' && getMissingConfig().length === 0;
 }
 
 function getMissingConfig() {
@@ -52,6 +56,10 @@ function getMissingConfig() {
 
 async function uploadVideo(filePath, contentType = 'video/mp4') {
   return uploadObject(filePath, 'reels', contentType);
+}
+
+async function uploadAvatar(filePath, contentType) {
+  return uploadObject(filePath, 'avatars', contentType);
 }
 
 async function uploadAppRelease(filePath) {
@@ -88,16 +96,31 @@ async function getVideoUrl(key) {
   );
 }
 
+async function getAvatarUrl(key) {
+  return getVideoUrl(key);
+}
+
 async function deleteVideo(key) {
+  return deleteObject(key);
+}
+
+async function deleteAvatar(key) {
+  return deleteObject(key);
+}
+
+async function deleteObject(key) {
   const { bucket, client } = getConfig();
   await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
 }
 
 module.exports = {
+  deleteAvatar,
   deleteVideo,
   getMissingConfig,
+  getAvatarUrl,
   getVideoUrl,
   isConfigured,
+  uploadAvatar,
   uploadAppRelease,
   uploadVideo
 };

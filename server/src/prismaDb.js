@@ -6,6 +6,16 @@ const { v4: uuidv4 } = require('uuid');
 const ACCOUNT_NOT_FOUND = 'Account not found. Please check your Email / Scholar No / Anonymous Name or Register.';
 const scrypt = promisify(crypto.scrypt);
 
+function isAnonymousNameUniqueError(error) {
+  if (error.code !== 'P2002') return false;
+  const target = error.meta?.target;
+  return Array.isArray(target)
+    ? target.some(field => field === 'anonymous_name' || field === 'anonymousName')
+    : typeof target === 'string' && (
+      /anonymous[_A-Za-z]*name/i.test(target) || target.toLowerCase().includes('anonymous_name')
+    );
+}
+
 async function hashPassword(password) {
   const salt = crypto.randomBytes(16).toString('hex');
   const derivedKey = await scrypt(password, salt, 64);
@@ -44,6 +54,18 @@ class PrismaDB {
 
   clearOtp(...args) {
     return this.localHelpers.clearOtp(...args);
+  }
+
+  savePasswordResetOtp(...args) {
+    return this.localHelpers.savePasswordResetOtp(...args);
+  }
+
+  verifyPasswordResetOtp(...args) {
+    return this.localHelpers.verifyPasswordResetOtp(...args);
+  }
+
+  clearPasswordResetOtp(...args) {
+    return this.localHelpers.clearPasswordResetOtp(...args);
   }
 
   async initialize() {
@@ -118,7 +140,6 @@ class PrismaDB {
     gender,
     hostel,
     anonymousName,
-    avatarUrl,
     academicYear
   }) {
     const validation = this.validateManitEmail(email);
@@ -144,7 +165,6 @@ class PrismaDB {
       academicYear: academicYear || this.getAcademicYearFromScholarNo(validation.scholarNo),
       hostel: hostel || 'Campus Hostel',
       anonymousName: cleanAnonymousName,
-      avatarUrl: avatarUrl || null,
       isEmailVerified: true,
       createdAt: new Date().toISOString()
     };
@@ -162,7 +182,7 @@ class PrismaDB {
         }
       });
     } catch (error) {
-      if (error.code === 'P2002' && error.meta?.target?.includes('anonymous_name')) {
+      if (isAnonymousNameUniqueError(error)) {
         throw new Error('This anonymous persona name is already taken. Please choose another.');
       }
       if (error.code === 'P2002' && error.meta?.target?.includes('email')) {
@@ -194,15 +214,60 @@ class PrismaDB {
     return user;
   }
 
+  async updatePasswordByEmail(email, password) {
+    const normalizedEmail = email.trim().toLowerCase();
+    const user = await this.client.pmcUser.findUnique({ where: { email: normalizedEmail } });
+    if (!user) return null;
+
+    const passwordHash = await hashPassword(password);
+    const data = { ...user.data, passwordHash };
+    delete data.password;
+    const updated = await this.client.pmcUser.update({
+      where: { email: normalizedEmail },
+      data: { data }
+    });
+    return updated.data;
+  }
+
   async updateUserPersona(userId, newAnonymousName) {
-    const cleanName = newAnonymousName.trim();
+    const cleanName = typeof newAnonymousName === 'string' ? newAnonymousName.trim() : '';
+    if (!cleanName) throw new Error('An anonymous persona name is required.');
     const user = await this.client.pmcUser.findUnique({ where: { id: userId } });
     if (!user) return null;
 
+    const existingUser = await this.client.pmcUser.findFirst({
+      where: {
+        anonymousName: cleanName.toLowerCase(),
+        NOT: { id: userId }
+      }
+    });
+    if (existingUser) {
+      throw new Error('This anonymous persona name is already taken. Please choose another.');
+    }
+
     const data = { ...user.data, anonymousName: cleanName };
+    try {
+      const updated = await this.client.pmcUser.update({
+        where: { id: userId },
+        data: { anonymousName: cleanName.toLowerCase(), data }
+      });
+      return updated.data;
+    } catch (error) {
+      if (isAnonymousNameUniqueError(error)) {
+        throw new Error('This anonymous persona name is already taken. Please choose another.');
+      }
+      throw error;
+    }
+  }
+
+  async updateUserAvatar(userId, avatarStorageKey) {
+    const user = await this.client.pmcUser.findUnique({ where: { id: userId } });
+    if (!user) return null;
+
+    const data = { ...user.data, avatarStorageKey };
     const updated = await this.client.pmcUser.update({
       where: { id: userId },
-      data: { anonymousName: cleanName.toLowerCase(), data }
+      data: { data }
     });
     return updated.data;
   }
@@ -250,6 +315,10 @@ class PrismaDB {
     await this.client.pmcPushToken.deleteMany({ where: { token: { in: tokens } } });
   }
 
+  async removePushTokenForUser(userId, token) {
+    await this.client.pmcPushToken.deleteMany({ where: { userId, token } });
+  }
+
   async addAnnouncement({ id, title, message }) {
     return this.client.pmcAnnouncement.create({ data: { id, title, message } });
   }
@@ -295,7 +364,7 @@ class PrismaDB {
         user: comment.user,
         userYear: comment.userYear,
         text: comment.text,
-        time: 'Just now'
+        createdAt: comment.createdAt.toISOString()
       }))
     }));
   }
@@ -436,11 +505,10 @@ class PrismaDB {
       id: `c_${uuidv4()}`,
       user: user || 'Anonymous Student',
       userYear: userYear || 'Student',
-      text,
-      time: 'Just now'
+      text
     };
     try {
-      await this.client.pmcReelComment.create({
+      const savedComment = await this.client.pmcReelComment.create({
         data: {
           id: comment.id,
           reelId,
@@ -449,6 +517,7 @@ class PrismaDB {
           text: comment.text
         }
       });
+      comment.createdAt = savedComment.createdAt.toISOString();
     } catch (error) {
       if (error.code === 'P2003' || error.code === 'P2025') return null;
       throw error;

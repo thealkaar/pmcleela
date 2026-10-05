@@ -4,6 +4,7 @@
     "slug": "pmc-admin",
     "version": "1.0.0",
     "orientation": "portrait",
+    "icon": "./assets/app-logo.png",
     "userInterfaceStyle": "dark",
     "android": {
       "package": "com.pmcleela.admin"

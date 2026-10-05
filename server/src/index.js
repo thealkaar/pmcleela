@@ -4,33 +4,58 @@ const http = require('http');
 const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
-const { randomUUID } = require('crypto');
+const { randomInt, randomUUID } = require('crypto');
 const multer = require('multer');
 const { Server } = require('socket.io');
 
 const Matchmaker = require('./matchmaker');
 const { LocalDB } = require('./db');
 const PrismaDB = require('./prismaDb');
-const { sendOtpEmail } = require('./emailService');
+const { sendOtpEmail, sendPasswordResetEmail } = require('./emailService');
 const { trimAndCropVideo } = require('./videoProcessor');
 const r2Storage = require('./r2Storage');
 const { loginAdmin, requireAdmin } = require('./adminAuth');
+const {
+  issueUserToken,
+  verifyUserToken,
+  isSessionAuthConfigured,
+  requireUser,
+  optionalUser
+} = require('./userAuth');
 const { sendPushToAll } = require('./pushNotifications');
 
 if (process.env.NODE_ENV === 'production' && !process.env.DATABASE_URL) {
   throw new Error('DATABASE_URL is required in production. Configure the Supabase PostgreSQL connection string.');
 }
+if (
+  process.env.NODE_ENV === 'production' &&
+  (!process.env.PMC_USER_SESSION_SECRET || process.env.PMC_USER_SESSION_SECRET.length < 32)
+) {
+  throw new Error('PMC_USER_SESSION_SECRET must be configured with at least 32 characters in production.');
+}
 
-const db = process.env.DATABASE_URL ? new PrismaDB(LocalDB) : new LocalDB();
+const db = process.env.PMC_LOCAL_MODE === '1'
+  ? new LocalDB()
+  : process.env.DATABASE_URL
+    ? new PrismaDB(LocalDB)
+    : new LocalDB();
 const app = express();
 const server = http.createServer(app);
 
-function publicUser(user) {
+function publicUser(user, req) {
   if (!user) return user;
   const safeUser = { ...user };
   delete safeUser.password;
   delete safeUser.passwordHash;
   delete safeUser.fullName;
+  delete safeUser.avatarUri;
+  if (safeUser.avatarStorageKey) {
+    const avatarPath = `/api/users/${encodeURIComponent(safeUser.id)}/avatar?v=${encodeURIComponent(safeUser.avatarStorageKey)}`;
+    safeUser.avatarUrl = req ? `${req.protocol}://${req.get('host')}${avatarPath}` : avatarPath;
+  } else if (safeUser.avatarUrl && !/^https?:\/\//i.test(safeUser.avatarUrl)) {
+    safeUser.avatarUrl = null;
+  }
+  delete safeUser.avatarStorageKey;
   return safeUser;
 }
 
@@ -84,6 +109,80 @@ app.use('/uploads', express.static(uploadsDir, {
 // Serve test companion client
 const publicDir = path.join(__dirname, '../public');
 app.use(express.static(publicDir));
+app.get('/.well-known/assetlinks.json', (req, res) => {
+  const fingerprints = (process.env.ANDROID_APP_SHA256_CERT_FINGERPRINTS || '')
+    .split(',')
+    .map(fingerprint => fingerprint.trim())
+    .filter(Boolean);
+  if (!fingerprints.length) {
+    return res.status(503).json({
+      success: false,
+      message: 'Android App Links are not verified. Configure ANDROID_APP_SHA256_CERT_FINGERPRINTS.'
+    });
+  }
+  res.json([{
+    relation: ['delegate_permission/common.handle_all_urls'],
+    target: {
+      namespace: 'android_app',
+      package_name: 'com.pmcleela.app',
+      sha256_cert_fingerprints: fingerprints
+    }
+  }]);
+});
+app.get('/reel/:id', async (req, res) => {
+  try {
+    const reels = await db.getReels();
+    const reel = reels.find(item => String(item.id) === req.params.id);
+    if (!reel) {
+      return res.status(404).type('html').send(
+        '<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"><title>Reel unavailable</title></head><body><h1>Reel unavailable</h1><p>This reel may have been removed.</p></body></html>'
+      );
+    }
+
+    const escapeHtml = value => String(value).replace(/[&<>"']/g, character => ({
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#39;'
+    })[character]);
+    const reelId = encodeURIComponent(reel.id);
+    const shareUrl = `${req.protocol}://${req.get('host')}/reel/${reelId}`;
+    const appUrl = `pmcleela://reel/${reelId}`;
+    const title = `Watch ${reel.creatorName || 'a student'}'s reel on Leela`;
+    const description = reel.caption || 'Open this campus reel in PMC Leela.';
+    res.type('html').send(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${escapeHtml(title)}</title>
+  <meta name="description" content="${escapeHtml(description)}">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="${escapeHtml(title)}">
+  <meta property="og:description" content="${escapeHtml(description)}">
+  <meta property="og:url" content="${escapeHtml(shareUrl)}">
+  <meta name="twitter:card" content="summary">
+  <style>
+    body{margin:0;min-height:100vh;display:grid;place-items:center;background:#111827;color:#fff;font:16px system-ui,sans-serif}
+    main{box-sizing:border-box;width:min(92%,480px);padding:32px;border:1px solid #374151;border-radius:20px;background:#1f2937}
+    h1{font-size:24px;margin:0 0 12px}p{color:#d1d5db;line-height:1.5;overflow-wrap:anywhere}
+    a{display:inline-block;margin-top:12px;padding:13px 20px;border-radius:12px;background:#ec4899;color:#fff;text-decoration:none;font-weight:700}
+  </style>
+</head>
+<body><main>
+  <h1>${escapeHtml(title)}</h1>
+  <p>${escapeHtml(description)}</p>
+  <a href="${escapeHtml(appUrl)}">Open in PMC Leela</a>
+</main></body>
+</html>`);
+  } catch (error) {
+    console.error(`[Share] Could not load reel ${req.params.id}:`, error);
+    res.status(500).type('html').send(
+      '<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"><title>Reel unavailable</title></head><body><h1>Could not load this reel</h1><p>Please try the link again later.</p></body></html>'
+    );
+  }
+});
 app.get('/test', (req, res) => {
   res.sendFile(path.join(publicDir, 'test.html'));
 });
@@ -128,6 +227,24 @@ const appReleaseUpload = multer({
     cb(isApk && validType ? null : new Error('Choose a valid Android .apk file.'), isApk && validType);
   }
 });
+const avatarUpload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => cb(null, uploadsDir),
+    filename: (req, file, cb) => cb(null, `pmc_avatar_${randomUUID()}${path.extname(file.originalname).toLowerCase()}`)
+  }),
+  limits: { fileSize: 5 * 1024 * 1024, files: 1 },
+  fileFilter: (req, file, cb) => {
+    const extension = path.extname(file.originalname).toLowerCase();
+    const validTypes = {
+      '.jpg': 'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.png': 'image/png',
+      '.webp': 'image/webp'
+    };
+    const valid = validTypes[extension] === file.mimetype;
+    cb(valid ? null : new Error('Choose a JPEG, PNG, or WebP profile image.'), valid);
+  }
+});
 
 // Setup Socket.io for Piya Milan Chauraha
 const io = new Server(server, {
@@ -138,24 +255,39 @@ const io = new Server(server, {
 });
 
 const matchmaker = new Matchmaker(io);
+const requireStudent = requireUser(db);
+const allowOptionalStudent = optionalUser(db);
 
 // Socket.io Events
+io.use(async (socket, next) => {
+  if (!isSessionAuthConfigured()) return next(new Error('Student sign-in is temporarily unavailable.'));
+  const claims = verifyUserToken(socket.handshake.auth?.token);
+  if (!claims) return next(new Error('Student sign-in is required.'));
+  try {
+    const user = await db.findUserById(claims.sub);
+    if (!user) return next(new Error('Student account is unavailable.'));
+    socket.data.studentUser = user;
+    socket.data.userId = user.id;
+    return next();
+  } catch (error) {
+    console.error('[Auth] Could not authenticate student chat socket:', error);
+    return next(new Error('Could not verify student account.'));
+  }
+});
+
 io.on('connection', (socket) => {
   console.log(`[Socket] Connected: ${socket.id}`);
-  const authenticatedUserId = socket.handshake.auth?.userId;
-  if (typeof authenticatedUserId === 'string' && authenticatedUserId.length > 0) {
-    socket.data.userId = authenticatedUserId;
-  }
 
   io.emit('online_stats', matchmaker.getOnlineStats());
 
   // Enqueue user with gender, anonymous alias, and academic year
   socket.on('search_partner', (data) => {
-    console.log(`[PMC] ${socket.id} searching partner, gender: ${data?.gender}, alias: ${data?.preferredAlias}, year: ${data?.academicYear}`);
+    const user = socket.data.studentUser;
+    console.log(`[PMC] ${socket.id} searching partner for account ${user.id}`);
     matchmaker.enqueue(socket, {
-      gender: data?.gender || 'male',
-      preferredAlias: data?.preferredAlias,
-      academicYear: data?.academicYear
+      gender: user.gender || 'male',
+      preferredAlias: user.anonymousName,
+      academicYear: user.academicYear
     });
     io.emit('online_stats', matchmaker.getOnlineStats());
   });
@@ -174,10 +306,11 @@ io.on('connection', (socket) => {
 
   socket.on('next_partner', (data) => {
     console.log(`[PMC] ${socket.id} skipped to next partner`);
+    const user = socket.data.studentUser;
     matchmaker.next(socket, {
-      gender: data?.gender || 'male',
-      preferredAlias: data?.preferredAlias,
-      academicYear: data?.academicYear
+      gender: user.gender || 'male',
+      preferredAlias: user.anonymousName,
+      academicYear: user.academicYear
     });
     io.emit('online_stats', matchmaker.getOnlineStats());
   });
@@ -207,7 +340,7 @@ app.get('/api/admin/users', requireAdmin, async (req, res) => {
     }
     res.json({
       success: true,
-      data: users.map(user => ({ ...publicUser(user), reelsCount: reelCounts.get(user.id) || 0 }))
+      data: users.map(user => ({ ...publicUser(user, req), reelsCount: reelCounts.get(user.id) || 0 }))
     });
   } catch (error) {
     console.error('[Admin] Failed to list users:', error);
@@ -242,7 +375,7 @@ app.post('/api/admin/users', requireAdmin, async (req, res) => {
       academicYear: typeof academicYear === 'string' ? academicYear : ''
     });
     console.info(`[Admin] Created student account ${user.id}`);
-    res.status(201).json({ success: true, data: publicUser(user) });
+    res.status(201).json({ success: true, data: publicUser(user, req) });
   } catch (error) {
     const validationError = /already registered|already taken|Only MANIT student emails|is required/i.test(error.message);
     console.error('[Admin] Failed to create user:', error.message);
@@ -320,7 +453,7 @@ app.get('/api/admin/reports', requireAdmin, async (req, res) => {
     const data = await Promise.all(reports.map(async report => ({
       ...report,
       reel: report.reel ? await withPlayableVideoUrl(report.reel, req) : null,
-      reporter: publicUser(report.reporter)
+      reporter: publicUser(report.reporter, req)
     })));
     res.json({ success: true, data });
   } catch (error) {
@@ -403,14 +536,14 @@ app.post('/api/admin/announcements', requireAdmin, async (req, res) => {
   }
 });
 
-app.post('/api/push/register', async (req, res) => {
+app.post('/api/push/register', requireStudent, async (req, res) => {
   try {
-    const { userId, token, platform } = req.body || {};
+    const { token, platform } = req.body || {};
     const validToken = typeof token === 'string' && /^Expo(nent)?PushToken\[[^\]]+\]$/.test(token);
-    if (typeof userId !== 'string' || !validToken || !['android', 'ios'].includes(platform)) {
-      return res.status(400).json({ success: false, message: 'A valid user, Expo push token, and platform are required.' });
+    if (!validToken || !['android', 'ios'].includes(platform)) {
+      return res.status(400).json({ success: false, message: 'A valid Expo push token and platform are required.' });
     }
-    const registration = await db.registerPushToken(userId, token, platform);
+    const registration = await db.registerPushToken(req.studentUser.id, token, platform);
     if (!registration) return res.status(404).json({ success: false, message: 'Student account not found.' });
     res.json({ success: true });
   } catch (error) {
@@ -419,13 +552,13 @@ app.post('/api/push/register', async (req, res) => {
   }
 });
 
-app.post('/api/push/unregister', async (req, res) => {
+app.post('/api/push/unregister', requireStudent, async (req, res) => {
   try {
     const { token } = req.body || {};
     if (typeof token !== 'string' || !/^Expo(nent)?PushToken\[[^\]]+\]$/.test(token)) {
       return res.status(400).json({ success: false, message: 'A valid Expo push token is required.' });
     }
-    await db.removePushTokens([token]);
+    await db.removePushTokenForUser(req.studentUser.id, token);
     res.json({ success: true });
   } catch (error) {
     console.error('[Push] Failed to unregister device token:', error);
@@ -654,10 +787,89 @@ app.post('/api/auth/send-otp', async (req, res) => {
   }
 });
 
+app.post('/api/auth/forgot-password', async (req, res) => {
+  const genericResponse = {
+    success: true,
+    message: 'If an account exists for that MANIT email, a password reset code will be sent shortly. Check your inbox and spam folder.'
+  };
+  try {
+    const validation = db.validateManitEmail(req.body?.email);
+    if (!validation.valid) {
+      return res.status(400).json({ success: false, message: validation.message });
+    }
+
+    const user = await db.findUserByEmail(validation.email);
+    if (user) {
+      const otp = String(randomInt(100000, 1000000));
+      if (!db.savePasswordResetOtp(validation.email, otp)) {
+        return res.status(429).json({
+          success: false,
+          message: 'Please wait one minute before requesting another password reset code.'
+        });
+      }
+
+      const emailResult = await sendPasswordResetEmail(validation.email, otp);
+      if (!emailResult.success) {
+        db.clearPasswordResetOtp(validation.email);
+        console.error(`[Auth] Password reset email could not be sent: ${emailResult.error || 'unknown email service error'}`);
+        return res.status(503).json({
+          success: false,
+          message: 'Password reset email could not be sent right now. Please try again later or contact support.'
+        });
+      }
+    }
+    res.json(genericResponse);
+  } catch (error) {
+    console.error('[Auth] Could not process password reset request:', error);
+    res.status(503).json({
+      success: false,
+      message: 'Password reset email could not be sent right now. Please try again later or contact support.'
+    });
+  }
+});
+
+app.post('/api/auth/reset-password', async (req, res) => {
+  try {
+    const { email, otp, newPassword } = req.body || {};
+    const validation = db.validateManitEmail(email);
+    if (!validation.valid) {
+      return res.status(400).json({ success: false, message: validation.message });
+    }
+    if (typeof otp !== 'string' || !/^\d{6}$/.test(otp)) {
+      return res.status(400).json({ success: false, message: 'Enter the 6-digit password reset code.' });
+    }
+    if (typeof newPassword !== 'string' || newPassword.trim().length < 6 || newPassword.length > 128) {
+      return res.status(400).json({ success: false, message: 'New password must be between 6 and 128 characters.' });
+    }
+
+    const verification = db.verifyPasswordResetOtp(validation.email, otp);
+    if (!verification.success) {
+      return res.status(400).json({ success: false, message: verification.message });
+    }
+    const updatedUser = await db.updatePasswordByEmail(validation.email, newPassword.trim());
+    if (!updatedUser) {
+      return res.status(400).json({
+        success: false,
+        message: 'The reset code is invalid or expired. Request a new code and try again.'
+      });
+    }
+    res.json({ success: true, message: 'Password reset successfully. You can now log in with your new password.' });
+  } catch (error) {
+    console.error('[Auth] Could not reset password:', error);
+    res.status(500).json({ success: false, message: 'Could not reset password. Please request a new code and try again.' });
+  }
+});
+
 // 2. STEP 2: VERIFY OTP AND REGISTER ACCOUNT
 app.post('/api/auth/verify-and-register', async (req, res) => {
   try {
-    const { email, otp, phone, password, gender, academicYear, hostel, anonymousName, avatarUrl } = req.body;
+    if (!isSessionAuthConfigured()) {
+      return res.status(503).json({
+        success: false,
+        message: 'Student sign-in is temporarily unavailable. Please contact the app administrator.'
+      });
+    }
+    const { email, otp, phone, password, gender, academicYear, hostel, anonymousName } = req.body;
     
     if (!email || !otp) {
       return res.status(400).json({
@@ -690,15 +902,14 @@ app.post('/api/auth/verify-and-register', async (req, res) => {
       gender,
       academicYear,
       hostel,
-      anonymousName,
-      avatarUrl
+      anonymousName
     });
 
     res.status(201).json({
       success: true,
       message: 'Email verified! Account created successfully. Welcome to पी एम सी Leela.',
-      user: publicUser(newUser),
-      token: `tok_${Date.now()}_${newUser.id}`
+      user: publicUser(newUser, req),
+      token: issueUserToken(newUser.id)
     });
   } catch (err) {
     console.error('Verify & Register error:', err);
@@ -708,40 +919,21 @@ app.post('/api/auth/verify-and-register', async (req, res) => {
 
 // 3. LEGACY / DIRECT REGISTER (Fallback with automatic validation)
 app.post('/api/auth/register', async (req, res) => {
-  try {
-    const { email, password, phone, gender, academicYear, hostel, anonymousName, avatarUrl } = req.body;
-    if (!email || !password || !gender || !anonymousName) {
-      return res.status(400).json({
-        success: false,
-        message: 'Email, password, gender, and anonymous name are required.'
-      });
-    }
-
-    const newUser = await db.registerUser({
-      email,
-      password,
-      phone,
-      gender,
-      academicYear,
-      hostel,
-      anonymousName,
-      avatarUrl
-    });
-
-    res.status(201).json({
-      success: true,
-      message: 'Account created successfully! Welcome to पी एम सी Leela.',
-      user: publicUser(newUser),
-      token: `tok_${Date.now()}_${newUser.id}`
-    });
-  } catch (err) {
-    res.status(400).json({ success: false, message: err.message });
-  }
+  return res.status(410).json({
+    success: false,
+    message: 'Direct registration is disabled. Use the verified student registration flow.'
+  });
 });
 
 // 4. LOGIN STUDENT ACCOUNT (Using Email OR Scholar No OR Anonymous Name + Password)
 app.post('/api/auth/login', async (req, res) => {
   try {
+    if (!isSessionAuthConfigured()) {
+      return res.status(503).json({
+        success: false,
+        message: 'Student sign-in is temporarily unavailable. Please contact the app administrator.'
+      });
+    }
     const { identifier, password } = req.body;
     if (!identifier || !password) {
       return res.status(400).json({
@@ -754,38 +946,122 @@ app.post('/api/auth/login', async (req, res) => {
     res.json({
       success: true,
       message: 'Logged in successfully!',
-      user: publicUser(user),
-      token: `tok_${Date.now()}_${user.id}`
+      user: publicUser(user, req),
+      token: issueUserToken(user.id)
     });
   } catch (err) {
     res.status(401).json({ success: false, message: err.message });
   }
 });
 
-// 5. UPDATE ANONYMOUS PERSONA
-app.post('/api/auth/update-persona', async (req, res) => {
+app.get('/api/users/:userId/avatar', async (req, res) => {
   try {
-    const { userId, newAnonymousName } = req.body;
-    if (!userId || !newAnonymousName) {
-      return res.status(400).json({ success: false, message: 'User ID and new anonymous name required.' });
+    const user = await db.findUserById(req.params.userId);
+    if (!user) return res.status(404).end();
+    if (!user.avatarStorageKey) {
+      if (typeof user.avatarUrl === 'string' && /^https?:\/\//i.test(user.avatarUrl)) {
+        return res.redirect(302, user.avatarUrl);
+      }
+      return res.status(404).end();
+    }
+
+    const avatarUrl = await r2Storage.getAvatarUrl(user.avatarStorageKey);
+    res.set('Cache-Control', 'private, max-age=300');
+    return res.redirect(302, avatarUrl);
+  } catch (error) {
+    console.error('[Profile] Could not load avatar:', error);
+    return res.status(500).end();
+  }
+});
+
+app.post('/api/auth/avatar', requireStudent, (req, res) => {
+  if (!r2Storage.isConfigured()) {
+    return res.status(503).json({ success: false, message: 'Cloudflare R2 must be configured before uploading a profile image.' });
+  }
+
+  avatarUpload.single('avatar')(req, res, async (uploadError) => {
+    if (uploadError) {
+      const tooLarge = uploadError instanceof multer.MulterError && uploadError.code === 'LIMIT_FILE_SIZE';
+      return res.status(tooLarge ? 413 : 400).json({
+        success: false,
+        message: tooLarge ? 'Profile images must be 5 MB or smaller.' : uploadError.message
+      });
+    }
+
+    let uploadedStorageKey = null;
+    try {
+      const userId = req.studentUser.id;
+      if (!req.file) {
+        return res.status(400).json({ success: false, message: 'A profile image is required.' });
+      }
+
+      const currentUser = await db.findUserById(userId);
+      if (!currentUser) {
+        return res.status(404).json({ success: false, message: 'User not found.' });
+      }
+
+      uploadedStorageKey = await r2Storage.uploadAvatar(req.file.path, req.file.mimetype);
+      const updatedUser = await db.updateUserAvatar(userId, uploadedStorageKey);
+      if (!updatedUser) {
+        await r2Storage.deleteAvatar(uploadedStorageKey);
+        uploadedStorageKey = null;
+        return res.status(404).json({ success: false, message: 'User not found.' });
+      }
+
+      const previousStorageKey = currentUser.avatarStorageKey;
+      uploadedStorageKey = null;
+      if (previousStorageKey && previousStorageKey !== updatedUser.avatarStorageKey) {
+        await r2Storage.deleteAvatar(previousStorageKey).catch((cleanupError) => {
+          console.error('[Profile] Could not remove replaced avatar:', cleanupError);
+        });
+      }
+
+      return res.json({ success: true, user: publicUser(updatedUser, req) });
+    } catch (error) {
+      console.error('[Profile] Avatar upload failed:', error);
+      if (uploadedStorageKey) {
+        await r2Storage.deleteAvatar(uploadedStorageKey).catch((cleanupError) => {
+          console.error('[Profile] Could not remove failed avatar upload:', cleanupError);
+        });
+      }
+      return res.status(500).json({ success: false, message: 'Could not save the profile image.' });
+    } finally {
+      if (req.file?.path) {
+        await fs.promises.unlink(req.file.path).catch((cleanupError) => {
+          if (cleanupError.code !== 'ENOENT') console.error('[Profile] Could not remove temporary avatar:', cleanupError);
+        });
+      }
+    }
+  });
+});
+
+// 5. UPDATE ANONYMOUS PERSONA
+app.post('/api/auth/update-persona', requireStudent, async (req, res) => {
+  try {
+    const { newAnonymousName } = req.body || {};
+    const userId = req.studentUser.id;
+    if (!newAnonymousName) {
+      return res.status(400).json({ success: false, message: 'A new anonymous name is required.' });
     }
     const updatedUser = await db.updateUserPersona(userId, newAnonymousName);
     if (!updatedUser) {
       return res.status(404).json({ success: false, message: 'User not found.' });
     }
-    res.json({ success: true, user: publicUser(updatedUser) });
+    res.json({ success: true, user: publicUser(updatedUser, req) });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    const duplicateName = /anonymous persona name is already taken/i.test(err.message);
+    const invalidName = /anonymous persona name is required/i.test(err.message);
+    if (!duplicateName && !invalidName) {
+      console.error('[Profile] Failed to update anonymous persona:', err);
+    }
+    res.status(duplicateName || invalidName ? 400 : 500).json({ success: false, message: err.message });
   }
 });
 
 // 6. DELETE USER ACCOUNT & ALL ASSOCIATED DATA
-app.delete('/api/auth/delete-account', async (req, res) => {
+app.delete('/api/auth/delete-account', requireStudent, async (req, res) => {
   try {
-    const { userId } = req.body;
-    if (!userId) {
-      return res.status(400).json({ success: false, message: 'User ID is required.' });
-    }
+    const userId = req.studentUser.id;
 
     const result = await db.deleteUser(userId);
     if (!result) {
@@ -806,6 +1082,14 @@ app.delete('/api/auth/delete-account', async (req, res) => {
     }
 
     const failedStorageDeletions = [];
+    if (result.deletedUser.avatarStorageKey) {
+      try {
+        await r2Storage.deleteAvatar(result.deletedUser.avatarStorageKey);
+      } catch (storageErr) {
+        failedStorageDeletions.push(result.deletedUser.avatarStorageKey);
+        console.error('[Cleanup] Failed to delete R2 profile image:', storageErr.message);
+      }
+    }
     for (const key of result.deletedReelStorageKeys) {
       try {
         await r2Storage.deleteVideo(key);
@@ -815,12 +1099,12 @@ app.delete('/api/auth/delete-account', async (req, res) => {
       }
     }
 
-    console.log(`[Account] Deleted user ${result.deletedUser.anonymousName} (${result.deletedUser.email}), removed ${result.deletedReelFiles.length} local reel files and ${result.deletedReelStorageKeys.length - failedStorageDeletions.length} R2 reel objects`);
+    console.log(`[Account] Deleted user ${result.deletedUser.anonymousName} (${result.deletedUser.email}), removed ${result.deletedReelFiles.length} local reel files and ${result.deletedReelStorageKeys.length + Number(Boolean(result.deletedUser.avatarStorageKey)) - failedStorageDeletions.length} R2 objects`);
 
     res.status(failedStorageDeletions.length ? 502 : 200).json({
       success: failedStorageDeletions.length === 0,
       message: failedStorageDeletions.length
-        ? 'Your account was deleted, but some reel videos could not be removed from storage.'
+        ? 'Your account was deleted, but some profile or reel images could not be removed from storage.'
         : 'Your account and all associated data have been permanently deleted.',
       deletedReels: result.deletedReelFiles.length + result.deletedReelStorageKeys.length - failedStorageDeletions.length
     });
@@ -831,11 +1115,11 @@ app.delete('/api/auth/delete-account', async (req, res) => {
 });
 
 // 7. GET LEELA REELS FEED
-app.get('/api/reels', async (req, res) => {
+app.get('/api/reels', allowOptionalStudent, async (req, res) => {
   try {
     const host = req.get('host');
     const protocol = req.protocol;
-    const userId = typeof req.query.userId === 'string' ? req.query.userId : undefined;
+    const userId = req.studentUser?.id;
     const rawReels = await db.getReels(userId);
     const reels = await Promise.all(rawReels.map(async (r) => {
       if (r.videoStorageKey) {
@@ -856,7 +1140,7 @@ app.get('/api/reels', async (req, res) => {
 });
 
 // 8. UPLOAD REEL TO CONFIGURED STORAGE
-app.post('/api/reels/upload', (req, res) => {
+app.post('/api/reels/upload', requireStudent, (req, res) => {
   if (process.env.NODE_ENV === 'production' && !r2Storage.isConfigured()) {
     console.error(
       `[Leela] Rejecting reel upload: missing R2 environment variables: ${r2Storage.getMissingConfig().join(', ')}`
@@ -884,7 +1168,10 @@ app.post('/api/reels/upload', (req, res) => {
     let uploadedStorageKey = null;
     let uploadContentType = req.file?.mimetype || 'video/mp4';
     try {
-      const { creatorName, creatorYear, caption, audioTitle, tags, creatorId, trimStart, trimEnd, cropMode } = req.body;
+      const { caption, audioTitle, tags, trimStart, trimEnd, cropMode } = req.body;
+      const creatorId = req.studentUser.id;
+      const creatorName = req.studentUser.anonymousName;
+      const creatorYear = req.studentUser.academicYear;
       let videoUrl = req.body.videoUrl;
 
       if (!uploadedPath) {
@@ -954,6 +1241,36 @@ app.post('/api/reels/upload', (req, res) => {
         cropMode: cropMode || '9:16'
       });
 
+      const announcementId = `reel_${newReel.id}`;
+      const reelCaption = newReel.caption || 'A new campus reel is available.';
+      let notificationCreatorName = newReel.creatorName || 'A student';
+      try {
+        const creator = creatorId ? await db.findUserById(creatorId) : null;
+        notificationCreatorName = creator?.anonymousName || notificationCreatorName;
+        await db.addAnnouncement({
+          id: announcementId,
+          title: `New reel by ${notificationCreatorName}`,
+          message: reelCaption
+        });
+      } catch (notificationError) {
+        console.error(`[Push] Reel ${newReel.id} was published, but its notification could not be saved:`, notificationError);
+      }
+
+      try {
+        const pushTokens = await db.getPushTokens();
+        const delivery = await sendPushToAll(pushTokens, {
+          title: 'New reel on Leela',
+          body: `${notificationCreatorName}: ${reelCaption}`.slice(0, 180),
+          data: { type: 'reel', reelId: newReel.id }
+        });
+        if (delivery.invalidTokens.length) {
+          await db.removePushTokens(delivery.invalidTokens);
+        }
+        console.info(`[Push] New reel ${newReel.id}: ${delivery.sent} sent, ${delivery.failed} failed.`);
+      } catch (pushError) {
+        console.error(`[Push] Reel ${newReel.id} was published, but push delivery could not be completed:`, pushError);
+      }
+
       console.log(`[Leela] New reel stored: ${newReel.id} by ${creatorName} (${creatorYear})`);
       res.status(201).json({
         success: true,
@@ -979,15 +1296,9 @@ app.post('/api/reels/upload', (req, res) => {
 });
 
 // 8. TOGGLE LIKE ON REEL
-app.post('/api/reels/:id/like', async (req, res) => {
+app.post('/api/reels/:id/like', requireStudent, async (req, res) => {
   try {
-    const userId = typeof req.body?.userId === 'string' ? req.body.userId.trim() : '';
-    if (!userId) {
-      return res.status(400).json({ success: false, message: 'A user ID is required to like a reel.' });
-    }
-    if (!(await db.findUserById(userId))) {
-      return res.status(404).json({ success: false, message: 'User account not found.' });
-    }
+    const userId = req.studentUser.id;
     const updatedReel = await db.toggleLike(req.params.id, userId);
     if (!updatedReel) {
       return res.status(404).json({ success: false, message: 'Reel not found.' });
@@ -999,9 +1310,9 @@ app.post('/api/reels/:id/like', async (req, res) => {
   }
 });
 
-app.post('/api/reels/:id/report', async (req, res) => {
+app.post('/api/reels/:id/report', requireStudent, async (req, res) => {
   try {
-    const reporterId = typeof req.body?.reporterId === 'string' ? req.body.reporterId.trim() : '';
+    const reporterId = req.studentUser.id;
     const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : '';
     const validReasons = [
       'Harassment or bullying',
@@ -1010,7 +1321,7 @@ app.post('/api/reels/:id/report', async (req, res) => {
       'Spam or misleading',
       'Other'
     ];
-    if (!reporterId || !validReasons.includes(reason)) {
+    if (!validReasons.includes(reason)) {
       return res.status(400).json({ success: false, message: 'Select a valid report reason.' });
     }
     const report = await db.addReelReport(req.params.id, reporterId, reason);
@@ -1026,9 +1337,9 @@ app.post('/api/reels/:id/report', async (req, res) => {
 });
 
 // 9. POST COMMENT ON REEL
-app.post('/api/reels/:id/comments', async (req, res) => {
+app.post('/api/reels/:id/comments', requireStudent, async (req, res) => {
   try {
-    const { user, text, userYear } = req.body || {};
+    const { text } = req.body || {};
     const cleanText = typeof text === 'string' ? text.trim() : '';
     if (!cleanText) {
       return res.status(400).json({ success: false, message: 'Comment text is required.' });
@@ -1036,7 +1347,12 @@ app.post('/api/reels/:id/comments', async (req, res) => {
     if (cleanText.length > 1000) {
       return res.status(400).json({ success: false, message: 'Comments cannot exceed 1,000 characters.' });
     }
-    const comment = await db.addComment(req.params.id, user, cleanText, userYear);
+    const comment = await db.addComment(
+      req.params.id,
+      req.studentUser.anonymousName,
+      cleanText,
+      req.studentUser.academicYear
+    );
     if (!comment) {
       return res.status(404).json({ success: false, message: 'Reel not found.' });
     }

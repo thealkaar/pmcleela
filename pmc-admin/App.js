@@ -4,6 +4,7 @@ import {
   Alert,
   FlatList,
   KeyboardAvoidingView,
+  Image,
   Modal,
   Platform,
   ScrollView,
@@ -21,6 +22,7 @@ import { VideoView, useVideoPlayer } from 'expo-video';
 
 const API_URL = (process.env.EXPO_PUBLIC_API_URL || 'https://pmcleela.onrender.com').replace(/\/+$/, '');
 const REPORT_FILTERS = ['pending', 'resolved', 'dismissed'];
+const APP_LOGO = require('./assets/app-logo.png');
 
 async function request(path, token, options = {}) {
   const response = await fetch(`${API_URL}${path}`, {
@@ -569,7 +571,7 @@ export default function App() {
         <StatusBar barStyle="light-content" />
         <ScrollView contentContainerStyle={styles.loginScreen} keyboardShouldPersistTaps="handled">
           <View style={styles.loginMark}>
-            <Ionicons name="shield-checkmark" size={35} color="#f9a8d4" />
+            <Image source={APP_LOGO} style={styles.loginLogo} resizeMode="contain" />
           </View>
           <Text style={styles.brandEyebrow}>PMC LEELA</Text>
           <Text style={styles.loginTitle}>Admin console</Text>
@@ -592,9 +594,12 @@ export default function App() {
     <View style={styles.root}>
       <StatusBar barStyle="light-content" />
       <View style={styles.topBar}>
-        <View>
-          <Text style={styles.brandEyebrow}>PMC LEELA</Text>
-          <Text style={styles.screenTitle}>Admin console</Text>
+        <View style={styles.brandLockup}>
+          <Image source={APP_LOGO} style={styles.headerLogo} resizeMode="cover" />
+          <View>
+            <Text style={styles.brandEyebrow}>PMC LEELA</Text>
+            <Text style={styles.screenTitle}>Admin console</Text>
+          </View>
         </View>
         <TouchableOpacity style={styles.logoutButton} onPress={() => setToken('')}>
           <Ionicons name="log-out-outline" size={19} color="#d8dbea" />
@@ -795,6 +800,11 @@ const styles = StyleSheet.create({
     width: 72, height: 72, borderRadius: 22, backgroundColor: 'rgba(236,72,153,0.12)',
     borderWidth: 1, borderColor: 'rgba(236,72,153,0.25)', alignItems: 'center',
     justifyContent: 'center', marginBottom: 22
+  },
+  loginLogo: { width: 68, height: 68, borderRadius: 20 },
+  brandLockup: { flexDirection: 'row', alignItems: 'center', gap: 11 },
+  headerLogo: {
+    width: 42, height: 42, borderRadius: 13, borderWidth: 1, borderColor: 'rgba(249,168,212,0.3)'
   },
   brandEyebrow: { color: '#f472b6', fontSize: 10, fontWeight: '800', letterSpacing: 1.7 },
   loginTitle: { color: '#f8fafc', fontSize: 29, fontWeight: '800', marginTop: 6 },

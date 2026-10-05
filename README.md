@@ -1,7 +1,7 @@
-# 🌟 पी एम सी Leela (PMC Leela)
+# 🌟 PMC लीला
 > **The Official Campus Social App for MANIT Bhopal Students**
 
-**पी एम सी Leela** is a mobile application built with **React Native (Expo)** and **Node.js / Socket.io**, designed around MANIT campus culture.
+**PMC लीला** is a mobile application built with **React Native (Expo)** and **Node.js / Socket.io**, designed around MANIT campus culture.
 
 ---
 
@@ -42,8 +42,9 @@ Open a terminal in `a:\pmcleela\server`:
 ```bash
 cd server
 npm install
-npm start
+npm run dev
 ```
+* This local-only command uses `server/data/` JSON files and local uploads. It ignores database and R2 credentials from `.env`, does not send real OTP emails or push notifications, and does not run Prisma migrations. Production remains on `npm start`.
 * Backend runs at: `http://localhost:5000` (and `http://<your-wifi-ip>:5000`)
 * Socket.io active for PMC real-time matchmaking.
 * Express REST API active for Leela reels and uploads.
@@ -57,10 +58,12 @@ npx expo start
 
 ### Step 3: Open on Your Phone
 1. Install **Expo Go** from Google Play Store or Apple App Store.
-2. Scan the QR code shown in the terminal.
+2. Scan the QR code shown in the terminal while the phone and computer are on the same Wi-Fi network.
 3. The app will load instantly on your phone with live reload!
 
-> **Tip for Wi-Fi connection:** In the app, switch to the **MANIT Pass** tab and verify your computer's local Wi-Fi IP (e.g. `10.68.7.167`) so your phone connects directly to the backend.
+> **Tip for Wi-Fi connection:** Expo Go automatically uses the computer address Expo CLI advertises to reach the local backend. Keep the phone and computer on the same Wi-Fi, start Expo in LAN mode, and allow Node.js through Windows Firewall on port `5000` if prompted. The local app intentionally ignores `EXPO_PUBLIC_API_URL` so local tests cannot accidentally write to production.
+
+For production builds, keep using the existing EAS `preview` profile, which pins `EXPO_PUBLIC_API_URL` to the production Render service. Release builds use that URL (or the production URL fallback), and their backend/deployment behavior is unchanged.
 
 ## Deploy the Backend on Render Free
 
@@ -72,11 +75,12 @@ The repository includes a Render Blueprint at [`render.yaml`](./render.yaml). In
 * Start command: `npm start`
 * Health check path: `/api/health`
 * Upload limit: 100 MB; published reel length is limited to 40 seconds.
+* Profile images: JPEG, PNG, or WebP up to 5 MB; stored privately in Cloudflare R2.
 * Private Cloudflare R2 bucket; video playback uses expiring signed URLs.
 
 If creating a Web Service manually instead, use the same root directory, commands, and health-check path. Add the following secret environment variables in Render (never commit them or add them to the APK):
 
-* `R2_BUCKET_NAME`: the name of the Cloudflare R2 bucket for reel videos.
+* `R2_BUCKET_NAME`: the name of the Cloudflare R2 bucket for reel videos, profile avatars, and app releases.
 * `R2_ACCOUNT_ID`: your Cloudflare account ID. The S3 endpoint is constructed as `https://<account-id>.r2.cloudflarestorage.com`.
 * `R2_ACCESS_KEY_ID`: the access key ID from an R2 S3 API token scoped to this bucket with object read, write, and delete permissions.
 * `R2_SECRET_ACCESS_KEY`: the secret access key from the same R2 token. Keep both keys private and configure them only as Render environment variables.
@@ -84,10 +88,13 @@ If creating a Web Service manually instead, use the same root directory, command
 * `MAX_APP_RELEASE_MB`: optional maximum uploaded APK size; defaults to 250 MB.
 * `DATABASE_URL`: the Supabase PostgreSQL **Transaction pooler** URI (shared pooler, port `6543`) with `?pgbouncer=true&sslmode=require`. Prisma uses this IPv4-accessible URI for application queries. Replace its password placeholder with your rotated database password.
 * `DIRECT_URL`: the Supabase PostgreSQL **Session pooler** URI (shared pooler, port `5432`) with `?sslmode=require`. Prisma uses this for schema migrations. Use the same rotated password and keep this server-side as a Render secret.
-* `BREVO_API_KEY`: required for student OTP email. Also set `FROM_EMAIL` to the sender address verified with Brevo. OTP registration returns an error until the email API key is configured.
+* `BREVO_API_KEY`: required for student OTP and password-reset emails. Also set `FROM_EMAIL` to the sender address verified with Brevo. Password-reset requests now report a delivery/configuration error rather than claiming a reset email was sent when Brevo rejects it.
 * `PMC_ADMIN_EMAIL`, `PMC_ADMIN_PASSWORD`, `PMC_ADMIN_SESSION_SECRET`: configure the dedicated admin login only in Render. Use a unique password of at least 16 characters and a randomly generated session secret of at least 32 characters. Never put these values in the admin APK or repository.
+* `PMC_USER_SESSION_SECRET`: required for production student sign-in sessions. Set a separate random secret of at least 32 characters in Render; do not reuse the admin secret or include it in either APK.
 
-The backend uses Prisma ORM and applies checked-in database migrations at each start. Set both database URLs in Render before the first deployment. New user and reel metadata, likes, comments, broadcast messages, push tokens, app releases, and account/reel deletions are stored in Supabase; new account passwords are hashed before storage. The old local JSON files are not automatically imported—existing local accounts/reels need a separate migration if you want to keep them. Chat matchmaking and OTPs remain in process memory.
+Student sign-in and verified registration issue a signed, 30-day bearer session. Student write operations and chat sockets require that session and derive the account identity on the server rather than trusting user IDs supplied by the client. Install the updated student APK and sign in again to establish a session; older locally saved profiles do not contain one. Public reel feeds, shared reel pages, health checks, announcements, and app-release reads remain publicly accessible. Direct unverified account registration is disabled. CORS is not used as an authentication control: native apps and scripts can call the API without browser CORS enforcement, so server-side sessions provide the access check.
+
+The backend uses Prisma ORM and applies checked-in database migrations at each start. Set both database URLs in Render before the first deployment. New user and reel metadata, likes, comments, broadcast messages, push tokens, app releases, and account/reel deletions are stored in Supabase; new account passwords are hashed before storage. Profile images are uploaded to the private R2 bucket and served through expiring signed URLs. The old local JSON files are not automatically imported—existing local accounts/reels need a separate migration if you want to keep them. Chat matchmaking and OTPs remain in process memory.
 
 The 100 MB limit applies to the selected source file uploaded to the server. The editor and server both restrict the published, trimmed segment to at most 40 seconds. The gallery picker may select a longer source, but only a maximum 40-second segment can be published; camera recording is limited to 40 seconds.
 
@@ -99,6 +106,12 @@ cd mobile
 ```
 
 `EXPO_PUBLIC_API_URL` is embedded in the app at build time; it is not a secret. Rebuild the APK whenever the backend URL changes. The app uses that same URL for REST requests and Socket.IO.
+
+### Reel sharing and Android App Links
+
+Reel shares use clickable HTTPS links such as `https://pmcleela.onrender.com/reel/<reel-id>`. The backend serves a reel preview and an **Open in PMC Leela** fallback. Android opens the reel directly when App Links are verified; the app also routes notification taps and reel notifications in **Me → Notifications** straight to Leela.
+
+The Android app is configured to claim `https://pmcleela.onrender.com/reel/...`. For automatic app opening, configure the Render environment variable `ANDROID_APP_SHA256_CERT_FINGERPRINTS` with the SHA-256 fingerprint of the Android signing certificate used for the distributed APK (comma-separated if more than one certificate is used). The backend publishes this as `/.well-known/assetlinks.json`. Obtain the signing certificate details from EAS Android credentials; the certificate must match the APK installed on users' phones. After configuring it, deploy the backend and build/install a new student APK so the Android App Link intent filter is present. If the service domain changes, update the app's Android intent filter and set `EXPO_PUBLIC_SHARE_URL` to the new HTTPS service URL when building.
 
 ## Build the private PMC Admin APK
 
@@ -117,8 +130,10 @@ The `preview` EAS profile creates an internal APK and points it at the productio
 
 ### Broadcasts and student-app updates
 
-- Student builds ask for notification permission after sign-in and register their Expo push token with the backend. Expo push delivery on Android requires valid Firebase Cloud Messaging v1 credentials configured for the EAS project. Devices that deny notifications cannot receive the system push, but broadcast messages remain visible in the student app's **Me → Updates & announcements** section.
-- In PMC Admin, use **Broadcast** to send a title and message to registered devices. The Admin app reports the number of accepted push tickets; this is not a guarantee that Android displayed each notification.
+- Student development/release builds ask for notification permission after sign-in and register their Expo push token with the backend. Expo push delivery on Android requires valid Firebase Cloud Messaging v1 credentials configured for the EAS project. New reel uploads and broadcasts are saved to the notification history in **Me → Notifications** and sent to registered devices. Devices that deny notifications cannot receive the system push, but saved items remain available in the app.
+- Android Expo Go does not support remote push notifications from SDK 53 onward. The app skips push-token registration in Expo Go to avoid its unsupported-API runtime error; the production APK and custom development builds retain push registration. Test actual phone push delivery with a development/release build, not Expo Go.
+- Students who forget their password can request a one-time code at their registered `@stu.manit.ac.in` address from **Log In → Forgot password?** The code expires after 10 minutes, is limited to five attempts, and can be requested once per minute. They use it to choose a new password; the existing password is never emailed. Password reset email uses the configured Brevo sender.
+- In PMC Admin, use **Broadcast** to send a title and message to registered devices. New reel alerts include the uploader's campus name and caption. The Admin app reports the number of accepted push tickets; this is not a guarantee that Android displayed each notification.
 - For an app release, increment `expo.android.versionCode` in `mobile/app.json`, set the corresponding `expo.version`, and build the signed student APK. In PMC Admin, open **App update**, enter the exact version name and Android version code embedded in that APK, add release notes, select the APK, and publish. The APK is stored privately in R2; publishing automatically sends an update notification and makes an update card available in Me.
 - Build the student APK from the existing EAS project so it uses the existing signing credentials:
 

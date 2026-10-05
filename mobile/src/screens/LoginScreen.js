@@ -19,13 +19,13 @@ import CoupleLogo from '../components/CoupleLogo';
 import { getBaseUrl } from '../config';
 
 const SUGGESTED_PERSONAS = [
-  '',
-  'SAC Member',
-  'Library Reader',
+  'H7 wali didi',
+  'Tony Stark',
+  'Saiyara',
   'PMC Regular',
-  'Hostel 7 Scholar',
-  'Technosearch Coder',
-  'Nescafe Enthusiast'
+  'NTB Scholar',
+  'Tommy',
+  'Neelam Paglu'
 ];
 
 export default function LoginScreen({ serverHost, onLoginSuccess }) {
@@ -44,8 +44,16 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
   // Login State
   const [loginIdentifier, setLoginIdentifier] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
+  const [forgotPasswordMode, setForgotPasswordMode] = useState(false);
+  const [passwordResetStep, setPasswordResetStep] = useState('email');
+  const [resetEmail, setResetEmail] = useState('');
+  const [resetOtp, setResetOtp] = useState('');
+  const [resetNewPassword, setResetNewPassword] = useState('');
+  const [resetConfirmPassword, setResetConfirmPassword] = useState('');
+  const [resetOtpTimer, setResetOtpTimer] = useState(0);
 
   // Register State (all initial fields blank - NO autofills)
+  const [fullName, setFullName] = useState('');
   const [phone, setPhone] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -72,6 +80,12 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
       if (timer) clearInterval(timer);
     };
   }, [regStep, otpTimer]);
+
+  useEffect(() => {
+    if (!forgotPasswordMode || passwordResetStep !== 'code' || resetOtpTimer <= 0) return undefined;
+    const timer = setInterval(() => setResetOtpTimer((remaining) => Math.max(0, remaining - 1)), 1000);
+    return () => clearInterval(timer);
+  }, [forgotPasswordMode, passwordResetStep, resetOtpTimer]);
 
   // Validate MANIT Student Email
   const isValidManitEmail = (val) => {
@@ -131,6 +145,10 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
 
   // Step 1: Send OTP to MANIT Email
   const handleSendOtp = async () => {
+    if (!fullName.trim()) {
+      Alert.alert('Name Required', 'Please enter your full name.');
+      return;
+    }
     if (!phone.trim() || phone.trim().replace(/\D/g, '').length < 10) {
       Alert.alert('Phone Required', 'Please enter a valid 10-digit mobile number.');
       return;
@@ -142,7 +160,7 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
     if (!isValidManitEmail(email)) {
       Alert.alert(
         'Invalid Email Format',
-        'Only official MANIT student emails are allowed (e.g. scholarNO@stu.manit.ac.in).'
+        'Only official MANIT student emails are allowed (e.g. scholar_no@stu.manit.ac.in).'
       );
       return;
     }
@@ -170,6 +188,7 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           email: email.trim(),
+          fullName: fullName.trim(),
           phone: phone.trim()
         })
       });
@@ -207,6 +226,7 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
         body: JSON.stringify({
           email: email.trim(),
           otp: otpCode.trim(),
+          fullName: fullName.trim(),
           phone: phone.trim(),
           password: password.trim(),
           gender,
@@ -217,10 +237,10 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
       });
 
       const data = await res.json();
-      if (data.success && data.user) {
-        onLoginSuccess(data.user);
+      if (data.success && data.user && data.token) {
+        await onLoginSuccess(data.user, data.token);
       } else {
-        Alert.alert('Verification Failed', data.message || 'Invalid verification code.');
+        Alert.alert('Verification Failed', data.message || 'Could not establish a secure sign-in session.');
       }
     } catch (err) {
       console.log('Verify OTP error:', err);
@@ -249,14 +269,96 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
       });
 
       const data = await res.json();
-      if (data.success && data.user) {
-        onLoginSuccess(data.user);
+      if (data.success && data.user && data.token) {
+        await onLoginSuccess(data.user, data.token);
       } else {
-        Alert.alert('Login Failed', data.message || 'Invalid credentials.');
+        Alert.alert('Login Failed', data.message || 'Could not establish a secure sign-in session.');
       }
     } catch (err) {
       console.log('Login error:', err);
       Alert.alert('Connection Error', 'Could not reach server. Please check connection and try again.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const openForgotPassword = () => {
+    const candidateEmail = loginIdentifier.trim();
+    setResetEmail(isValidManitEmail(candidateEmail) ? candidateEmail : '');
+    setResetOtp('');
+    setResetNewPassword('');
+    setResetConfirmPassword('');
+    setPasswordResetStep('email');
+    setResetOtpTimer(0);
+    setForgotPasswordMode(true);
+  };
+
+  const handleRequestPasswordReset = async () => {
+    if (!isValidManitEmail(resetEmail)) {
+      Alert.alert('College email required', 'Enter the registered MANIT student email ending in @stu.manit.ac.in.');
+      return;
+    }
+    try {
+      setLoading(true);
+      const response = await fetch(`${getBaseUrl(serverHost)}/api/auth/forgot-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: resetEmail.trim() })
+      });
+      const result = await response.json();
+      if (!response.ok || !result.success) {
+        throw new Error(result.message || 'Could not request a reset code. Please try again.');
+      }
+      setPasswordResetStep('code');
+      setResetOtp('');
+      setResetOtpTimer(60);
+      Alert.alert('Check your email', result.message);
+    } catch (error) {
+      console.error('[Password reset] Could not request code:', error);
+      Alert.alert('Could not send reset code', error.message || 'Check your connection and try again.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleResetPassword = async () => {
+    if (!/^\d{6}$/.test(resetOtp.trim())) {
+      Alert.alert('Code required', 'Enter the 6-digit code sent to your MANIT email.');
+      return;
+    }
+    if (resetNewPassword.trim().length < 6 || resetNewPassword.length > 128) {
+      Alert.alert('Password too short', 'Your new password must be between 6 and 128 characters.');
+      return;
+    }
+    if (resetNewPassword !== resetConfirmPassword) {
+      Alert.alert('Passwords do not match', 'Enter the same new password in both password fields.');
+      return;
+    }
+
+    try {
+      setLoading(true);
+      const response = await fetch(`${getBaseUrl(serverHost)}/api/auth/reset-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: resetEmail.trim(),
+          otp: resetOtp.trim(),
+          newPassword: resetNewPassword
+        })
+      });
+      const result = await response.json();
+      if (!response.ok || !result.success) {
+        throw new Error(result.message || 'Could not reset password. Request a new code and try again.');
+      }
+      setLoginIdentifier(resetEmail.trim());
+      setLoginPassword('');
+      setForgotPasswordMode(false);
+      setPasswordResetStep('email');
+      setResetOtpTimer(0);
+      Alert.alert('Password updated', result.message);
+    } catch (error) {
+      console.error('[Password reset] Could not update password:', error);
+      Alert.alert('Password not updated', error.message || 'Check the code and try again.');
     } finally {
       setLoading(false);
     }
@@ -296,7 +398,7 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
               <Ionicons name="lock-closed-outline" size={18} color="#10b981" style={styles.termIcon} />
               <Text style={styles.termText}>
                 <Text style={styles.termBold}>Privacy & Authenticity: </Text>
-                Your official college email and phone number are used for student verification and safety. Your real name is not requested. Only your chosen campus name is shown to other students.
+                Your name, email, and phone number are collected solely for student authenticity and safety. They are strictly private and never shown to others. Only your anonymous name is visible.
               </Text>
             </View>
           </View>
@@ -333,19 +435,14 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
   return (
     <KeyboardAvoidingView
       style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
-      <ScrollView
-        contentContainerStyle={styles.scrollContent}
-        showsVerticalScrollIndicator={false}
-        keyboardShouldPersistTaps="handled"
-        keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
-      >
+      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
         {/* Brand Header */}
         <View style={styles.brandHeader}>
           <CoupleLogo size={80} />
-          <Text style={styles.brandTitle}>पी एम सी <Text style={{ color: '#ec4899' }}>Leela</Text></Text>
-          <Text style={styles.brandSub}>MANIT Campus Portal</Text>
+          <Text style={styles.brandTitle}>PMC <Text style={{ color: '#ec4899' }}>लीला</Text></Text>
+          <Text style={styles.brandSub}>For Veer Bahadur Manitians</Text>
         </View>
 
         {/* Auth Mode Toggle */}
@@ -365,7 +462,11 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
 
           <TouchableOpacity
             style={[styles.tabBtn, authMode === 'register' && styles.tabBtnActive]}
-            onPress={() => setAuthMode('register')}
+            onPress={() => {
+              setAuthMode('register');
+              setForgotPasswordMode(false);
+              setPasswordResetStep('email');
+            }}
             activeOpacity={0.8}
           >
             <Text style={[styles.tabBtnText, authMode === 'register' && styles.tabBtnTextActive]}>
@@ -377,11 +478,119 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
         {/* ================= LOGIN FORM ================= */}
         {authMode === 'login' && (
           <View style={styles.formCard}>
+            {forgotPasswordMode ? (
+              <>
+                <View style={styles.otpHeader}>
+                  <Ionicons name="lock-open-outline" size={36} color="#ec4899" />
+                  <Text style={styles.otpTitle}>Reset your password</Text>
+                  <Text style={styles.otpSub}>
+                    {passwordResetStep === 'email'
+                      ? 'We will send a one-time reset code to your registered MANIT email.'
+                      : 'Enter the code from your email and choose a new password.'}
+                  </Text>
+                </View>
+
+                <View style={styles.inputGroup}>
+                  <Text style={styles.inputLabel}>Registered MANIT email</Text>
+                  <TextInput
+                    style={styles.inputField}
+                    placeholder="scholar_no@stu.manit.ac.in"
+                    placeholderTextColor="#64748b"
+                    value={resetEmail}
+                    onChangeText={setResetEmail}
+                    autoCapitalize="none"
+                    keyboardType="email-address"
+                    editable={passwordResetStep === 'email'}
+                  />
+                </View>
+
+                {passwordResetStep === 'code' && (
+                  <>
+                    <View style={styles.inputGroup}>
+                      <Text style={styles.inputLabel}>6-digit reset code</Text>
+                      <TextInput
+                        style={styles.otpInputField}
+                        placeholder="• • • • • •"
+                        placeholderTextColor="#475569"
+                        value={resetOtp}
+                        onChangeText={setResetOtp}
+                        keyboardType="number-pad"
+                        maxLength={6}
+                        textAlign="center"
+                      />
+                    </View>
+                    <View style={styles.inputGroup}>
+                      <Text style={styles.inputLabel}>New password</Text>
+                      <TextInput
+                        style={styles.inputField}
+                        placeholder="At least 6 characters"
+                        placeholderTextColor="#64748b"
+                        value={resetNewPassword}
+                        onChangeText={setResetNewPassword}
+                        secureTextEntry
+                        autoCapitalize="none"
+                      />
+                    </View>
+                    <View style={styles.inputGroup}>
+                      <Text style={styles.inputLabel}>Confirm new password</Text>
+                      <TextInput
+                        style={styles.inputField}
+                        placeholder="Re-enter new password"
+                        placeholderTextColor="#64748b"
+                        value={resetConfirmPassword}
+                        onChangeText={setResetConfirmPassword}
+                        secureTextEntry
+                        autoCapitalize="none"
+                      />
+                    </View>
+                  </>
+                )}
+
+                <TouchableOpacity
+                  style={styles.primaryBtn}
+                  onPress={passwordResetStep === 'email' ? handleRequestPasswordReset : handleResetPassword}
+                  disabled={loading}
+                  activeOpacity={0.85}
+                >
+                  {loading ? (
+                    <ActivityIndicator color="#ffffff" />
+                  ) : (
+                    <Text style={styles.primaryBtnText}>
+                      {passwordResetStep === 'email' ? 'Send Reset Code' : 'Set New Password'}
+                    </Text>
+                  )}
+                </TouchableOpacity>
+
+                {passwordResetStep === 'code' && (
+                  <TouchableOpacity
+                    style={styles.backLink}
+                    onPress={handleRequestPasswordReset}
+                    disabled={loading || resetOtpTimer > 0}
+                  >
+                    <Text style={[styles.resendLink, resetOtpTimer > 0 && styles.resendTimer]}>
+                      {resetOtpTimer > 0 ? `Resend code in ${resetOtpTimer}s` : 'Resend code'}
+                    </Text>
+                  </TouchableOpacity>
+                )}
+                <TouchableOpacity
+                  style={styles.backLink}
+                  onPress={() => {
+                    setForgotPasswordMode(false);
+                    setPasswordResetStep('email');
+                    setResetOtpTimer(0);
+                  }}
+                >
+                  <Text style={styles.backLinkText}></Text>
+                  <Text style={styles.backLinkText}>← Back to Log In</Text>
+                </TouchableOpacity>
+              </>
+            ) : (
+              <>
             <View style={styles.inputGroup}>
               <Text style={styles.inputLabel}>Email or Anonymous Name</Text>
               <TextInput
                 style={styles.inputField}
-                placeholder="scholarNO@stu.manit.ac.in"
+                placeholder="scholar_no@stu.manit.ac.in"
                 placeholderTextColor="#64748b"
                 value={loginIdentifier}
                 onChangeText={setLoginIdentifier}
@@ -425,6 +634,12 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
                 <Text style={styles.primaryBtnText}>Log In</Text>
               )}
             </TouchableOpacity>
+            <TouchableOpacity style={styles.backLink} onPress={openForgotPassword}>
+              <Text style={styles.resendLink}></Text>
+              <Text style={styles.resendLink}>Forgot password?</Text>
+            </TouchableOpacity>
+              </>
+            )}
           </View>
         )}
 
@@ -441,6 +656,17 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
                 )}
               </TouchableOpacity>
               <Text style={styles.avatarText}>Add Photo (Optional)</Text>
+            </View>
+
+            <View style={styles.inputGroup}>
+              <Text style={styles.inputLabel}>Student Full Name</Text>
+              <TextInput
+                style={styles.inputField}
+                placeholder="Your full name"
+                placeholderTextColor="#64748b"
+                value={fullName}
+                onChangeText={setFullName}
+              />
             </View>
 
             <View style={styles.inputGroup}>
@@ -466,7 +692,7 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
                       : { borderColor: '#ef4444' }
                   )
                 ]}
-                placeholder="scholarNO@stu.manit.ac.in"
+                placeholder="scholar_no@stu.manit.ac.in"
                 placeholderTextColor="#64748b"
                 value={email}
                 onChangeText={handleEmailChange}
@@ -488,7 +714,7 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
                   ) : (
                     <>
                       <Ionicons name="close-circle" size={14} color="#ef4444" />
-                      <Text style={styles.emailInvalidText}>Must be scholarNO@stu.manit.ac.in</Text>
+                      <Text style={styles.emailInvalidText}>Must be scholar_no@stu.manit.ac.in</Text>
                     </>
                   )}
                 </View>
@@ -583,7 +809,7 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
             <View style={styles.privacyBox}>
               <Ionicons name="lock-closed" size={14} color="#10b981" />
               <Text style={styles.privacyText}>
-                Your real name is never requested. Your college email and phone are kept private; only your campus name is shown to others.
+                Your name, email & phone are strictly for safety. Only your anonymous name is shown to others.
               </Text>
             </View>
 
@@ -701,8 +927,7 @@ const styles = StyleSheet.create({
   scrollContent: {
     paddingHorizontal: 24,
     paddingTop: 40,
-    paddingBottom: 40,
-    flexGrow: 1
+    paddingBottom: 40
   },
   // Terms Gate Styles
   gateContainer: {

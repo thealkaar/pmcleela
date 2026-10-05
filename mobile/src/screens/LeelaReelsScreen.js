@@ -14,16 +14,14 @@ import {
   Share,
   Alert,
   KeyboardAvoidingView,
-  Platform,
-  PermissionsAndroid
+  Platform
 } from 'react-native';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import * as ImagePicker from 'expo-image-picker';
 import { File, UploadType } from 'expo-file-system';
 import { Ionicons } from '@expo/vector-icons';
 import VideoSlideTrimmer from '../components/VideoSlideTrimmer';
-import { getBaseUrl } from '../config';
-import BackgroundReelUpload from '../../modules/background-reel-upload/src';
+import { getBaseUrl, REEL_SHARE_BASE_URL } from '../config';
 
 const formatYearShort = (val) => {
   if (!val) return '1st';
@@ -65,6 +63,27 @@ function shuffleReelsByDay(reels) {
       }
       return dayReels;
     });
+}
+
+function formatCommentAge(createdAt, now = Date.now()) {
+  const timestamp = new Date(createdAt).getTime();
+  if (!Number.isFinite(timestamp)) return 'Time unavailable';
+  const elapsedMs = Math.max(0, now - timestamp);
+  const elapsedMinutes = Math.floor(elapsedMs / 60000);
+  if (elapsedMinutes < 1) return 'Just now';
+  if (elapsedMinutes < 60) return `${elapsedMinutes} min ago`;
+
+  const elapsedHours = Math.floor(elapsedMinutes / 60);
+  if (elapsedHours < 24) return `${elapsedHours} hr ago`;
+
+  const elapsedDays = Math.floor(elapsedHours / 24);
+  if (elapsedDays < 30) return `${elapsedDays} day${elapsedDays === 1 ? '' : 's'} ago`;
+
+  const elapsedMonths = Math.floor(elapsedDays / 30);
+  if (elapsedMonths < 12) return `${elapsedMonths} mo ago`;
+
+  const elapsedYears = Math.floor(elapsedDays / 365);
+  return `${elapsedYears} yr ago`;
 }
 
 // Fullscreen WhatsApp-Style Slide & Trim Story Editor Component
@@ -530,60 +549,23 @@ function ReelItem({
   );
 }
 
-async function uploadVideoFile(url, uri, fields, onProgress, onStarted) {
+async function uploadVideoFile(url, uri, fields, authToken, onProgress, onStarted) {
   const parameters = Object.fromEntries(
     Object.entries(fields)
       .filter(([, value]) => value !== undefined && value !== null)
       .map(([key, value]) => [key, String(value)])
   );
-  if (Platform.OS === 'android') {
-    if (!BackgroundReelUpload) {
-      throw new Error('Background uploads need the installed Android app. They are not available in Expo Go.');
-    }
-    const uploadId = await BackgroundReelUpload.startUpload(url, uri, parameters);
-    onStarted?.();
-    while (true) {
-      await new Promise((resolve) => setTimeout(resolve, 800));
-      const state = await BackgroundReelUpload.getUploadState();
-      if (state.uploadId !== uploadId) continue;
-      onProgress(Math.min(99, Math.max(0, Number(state.progress) || 0)));
-      if (state.status === 'completed') {
-        let response;
-        try {
-          response = JSON.parse(state.responseBody);
-        } catch (error) {
-          throw new Error('Server returned an invalid upload response.');
-        }
-        if (!response.success) {
-          throw new Error(response.message || 'The server rejected the reel upload.');
-        }
-        await BackgroundReelUpload.clearUploadState();
-        onProgress(100);
-        return response;
-      }
-      if (state.status === 'failed') {
-        let serverMessage;
-        try {
-          serverMessage = JSON.parse(state.responseBody).message;
-        } catch (error) {
-          serverMessage = null;
-        }
-        await BackgroundReelUpload.clearUploadState();
-        throw new Error(serverMessage || state.error || 'Could not upload the video.');
-      }
-    }
-  }
-
   const filename = uri.split(/[?#]/)[0].split('/').pop() || `reel_${Date.now()}.mp4`;
   const match = /\.(\w+)$/.exec(filename);
   const mimeType = match ? `video/${match[1].toLowerCase()}` : 'video/mp4';
   const task = new File(uri).createUploadTask(url, {
     httpMethod: 'POST',
+    headers: { Authorization: `Bearer ${authToken}` },
     uploadType: UploadType.MULTIPART,
     fieldName: 'video',
     mimeType,
     parameters,
-    sessionType: 'background',
+    sessionType: Platform.OS === 'android' ? 'foreground' : 'background',
     onProgress: ({ bytesSent, totalBytes }) => {
       if (totalBytes > 0) {
         onProgress(Math.min(99, Math.floor((bytesSent / totalBytes) * 100)));
@@ -616,7 +598,9 @@ async function uploadVideoFile(url, uri, fields, onProgress, onStarted) {
 export default function LeelaReelsScreen({
   serverHost,
   currentUser,
+  authToken,
   isTabActive = true,
+  isKeyboardVisible = false,
   reelIdToOpen = null,
   onReelOpened
 }) {
@@ -642,6 +626,7 @@ export default function LeelaReelsScreen({
   const [reportSubmitting, setReportSubmitting] = useState(false);
   const [commentText, setCommentText] = useState('');
   const [commentPosting, setCommentPosting] = useState(false);
+  const [commentAgeNow, setCommentAgeNow] = useState(Date.now());
   const likeQueuesRef = useRef(new Map());
 
   // Picker & Story Editor Modal States
@@ -661,8 +646,9 @@ export default function LeelaReelsScreen({
   // Fetch reels from backend
   const fetchReels = async () => {
     try {
-      const userId = currentUser?.id ? `?userId=${encodeURIComponent(currentUser.id)}` : '';
-      const res = await fetch(`${getBaseUrl(serverHost)}/api/reels${userId}`);
+      const res = await fetch(`${getBaseUrl(serverHost)}/api/reels`, {
+        headers: authToken ? { Authorization: `Bearer ${authToken}` } : {}
+      });
       const data = await res.json();
       if (!res.ok || !data.success) {
         throw new Error(data.message || 'Could not load reels.');
@@ -681,10 +667,10 @@ export default function LeelaReelsScreen({
 
   useEffect(() => {
     fetchReels();
-  }, [serverHost, currentUser?.id]);
+  }, [serverHost, authToken]);
 
   useEffect(() => {
-    if (!reelIdToOpen || loading || refreshing) return;
+    if (!reelIdToOpen || !isTabActive || loading || refreshing) return;
 
     const reelIndex = reels.findIndex((reel) => reel.id === reelIdToOpen);
     if (reelsFetchFailed) {
@@ -696,7 +682,7 @@ export default function LeelaReelsScreen({
       reelsListRef.current?.scrollToIndex({ index: reelIndex, animated: false });
     }
     onReelOpened?.(reelIdToOpen);
-  }, [loading, onReelOpened, reelIdToOpen, reels, reelsFetchFailed, refreshing]);
+  }, [isTabActive, loading, onReelOpened, reelIdToOpen, reels, reelsFetchFailed, refreshing]);
 
   const handleRefresh = () => {
     setRefreshing(true);
@@ -726,8 +712,11 @@ export default function LeelaReelsScreen({
     queue.promise = queue.promise.catch(() => {}).then(async () => {
       const response = await fetch(`${getBaseUrl(serverHost)}/api/reels/${reelId}/like`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId })
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`
+        },
+        body: JSON.stringify({})
       });
       const result = await response.json();
       if (!response.ok || !result.success) {
@@ -747,8 +736,9 @@ export default function LeelaReelsScreen({
       if (queue.pending === 0) {
         likeQueuesRef.current.delete(reelId);
         try {
-          const userQuery = `?userId=${encodeURIComponent(userId)}`;
-          const response = await fetch(`${getBaseUrl(serverHost)}/api/reels${userQuery}`);
+          const response = await fetch(`${getBaseUrl(serverHost)}/api/reels`, {
+            headers: { Authorization: `Bearer ${authToken}` }
+          });
           const result = await response.json();
           if (!response.ok || !result.success || !Array.isArray(result.data)) {
             throw new Error(result.message || 'Could not refresh the reel.');
@@ -767,9 +757,16 @@ export default function LeelaReelsScreen({
   };
 
   const handleOpenComments = (reel) => {
+    setCommentAgeNow(Date.now());
     setSelectedReel(reel);
     setCommentsModalVisible(true);
   };
+
+  useEffect(() => {
+    if (!commentsModalVisible) return undefined;
+    const interval = setInterval(() => setCommentAgeNow(Date.now()), 60 * 1000);
+    return () => clearInterval(interval);
+  }, [commentsModalVisible]);
 
   const handlePostComment = () => {
     const text = commentText.trim();
@@ -781,7 +778,7 @@ export default function LeelaReelsScreen({
       user: currentUser?.anonymousName || 'Student',
       userYear,
       text,
-      time: 'Sending…',
+      createdAt: new Date().toISOString(),
       pending: true
     };
     const updatedComments = [optimisticComment, ...(selectedReel.comments || [])];
@@ -799,10 +796,11 @@ export default function LeelaReelsScreen({
       try {
         const response = await fetch(`${getBaseUrl(serverHost)}/api/reels/${reelId}/comments`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${authToken}`
+          },
           body: JSON.stringify({
-            user: currentUser?.anonymousName || 'Student',
-            userYear,
             text
           })
         });
@@ -854,7 +852,7 @@ export default function LeelaReelsScreen({
 
   const handleShare = async (reel) => {
     try {
-      const reelUrl = `pmcleela://reel/${encodeURIComponent(reel.id)}`;
+      const reelUrl = `${REEL_SHARE_BASE_URL}/reel/${encodeURIComponent(reel.id)}`;
       await Share.share({
         message: `Watch "${reel.caption || 'this reel'}" on Leela!\n${reelUrl}`,
         url: reelUrl
@@ -884,8 +882,11 @@ export default function LeelaReelsScreen({
         `${getBaseUrl(serverHost)}/api/reels/${reelToReport.id}/report`,
         {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ reporterId: currentUser.id, reason })
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${authToken}`
+          },
+          body: JSON.stringify({ reason })
         }
       );
       const result = await response.json();
@@ -956,37 +957,19 @@ export default function LeelaReelsScreen({
     }
 
     try {
-      if (Platform.OS === 'android' && Number(Platform.Version) >= 33) {
-        const notificationPermission = 'android.permission.POST_NOTIFICATIONS';
-        const permission = await PermissionsAndroid.request(notificationPermission, {
-          title: 'Allow upload notifications',
-          message: 'Leela uses notifications to show reel upload progress while you use other apps.',
-          buttonPositive: 'Allow',
-          buttonNegative: 'Not now'
-        });
-        if (permission !== PermissionsAndroid.RESULTS.GRANTED) {
-          Alert.alert('Notifications needed', 'Allow notifications to upload reels in the background and see their progress.');
-          return;
-        }
-      }
       setUploading(true);
       setUploadProgress(0);
 
-      const creatorName = currentUser?.anonymousName || 'Campus Creator';
-      const creatorYear = currentUser?.academicYear || 'Student';
       const reelCaption = caption?.trim() || 'Campus vibes on Leela';
       const uploadUrl = `${getBaseUrl(serverHost)}/api/reels/upload`;
 
       const uploadResult = await uploadVideoFile(uploadUrl, selectedVideoUri, {
-        creatorId: currentUser?.id,
-        creatorName,
-        creatorYear,
         caption: reelCaption,
         audioTitle: audioTitle?.trim() || 'Original Audio',
         trimStart: String(trimStart),
         trimEnd: String(trimEnd),
         cropMode: cropMode || '9:16'
-      }, setUploadProgress, () => {
+      }, authToken, setUploadProgress, () => {
         setStoryEditorVisible(false);
         setSelectedVideoUri(null);
       });
@@ -1120,10 +1103,7 @@ export default function LeelaReelsScreen({
         animationType="slide"
         onRequestClose={() => setCommentsModalVisible(false)}
       >
-        <KeyboardAvoidingView
-          style={styles.commentsBackdrop}
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        >
+        <View style={styles.commentsBackdrop}>
           <View style={styles.commentsSheet}>
             <View style={styles.sheetHandle} />
 
@@ -1152,7 +1132,11 @@ export default function LeelaReelsScreen({
                         </View>
                       ) : null}
                       <Text style={[styles.commentTime, item.pending && styles.pendingCommentTime]}>
-                        {item.pending ? 'Sending…' : item.time}
+                        {item.pending
+                          ? 'Sending…'
+                          : item.createdAt
+                            ? formatCommentAge(item.createdAt, commentAgeNow)
+                            : item.time || 'Time unavailable'}
                       </Text>
                     </View>
                     <Text style={styles.commentContent}>{item.text}</Text>
@@ -1166,24 +1150,30 @@ export default function LeelaReelsScreen({
               }
             />
 
-            <View style={styles.addCommentBar}>
-              <TextInput
-                style={styles.commentInput}
-                placeholder="Add comment..."
-                placeholderTextColor="#64748b"
-                value={commentText}
-                onChangeText={setCommentText}
-              />
-              <TouchableOpacity
-                style={[styles.postButton, (!commentText.trim() || commentPosting) && { opacity: 0.5 }]}
-                onPress={handlePostComment}
-                disabled={!commentText.trim() || commentPosting}
-              >
-                <Text style={styles.postButtonText}>{commentPosting ? 'Posting...' : 'Post'}</Text>
-              </TouchableOpacity>
-            </View>
+            <KeyboardAvoidingView
+              style={styles.commentComposerAvoider}
+              behavior="position"
+              keyboardVerticalOffset={-18}
+            >
+              <View style={[styles.addCommentBar, isKeyboardVisible && styles.keyboardLift]}>
+                <TextInput
+                  style={styles.commentInput}
+                  placeholder="Add comment..."
+                  placeholderTextColor="#64748b"
+                  value={commentText}
+                  onChangeText={setCommentText}
+                />
+                <TouchableOpacity
+                  style={[styles.postButton, (!commentText.trim() || commentPosting) && { opacity: 0.5 }]}
+                  onPress={handlePostComment}
+                  disabled={!commentText.trim() || commentPosting}
+                >
+                  <Text style={styles.postButtonText}>{commentPosting ? 'Posting...' : 'Post'}</Text>
+                </TouchableOpacity>
+              </View>
+            </KeyboardAvoidingView>
           </View>
-        </KeyboardAvoidingView>
+        </View>
       </Modal>
 
       <Modal
@@ -1591,6 +1581,9 @@ const styles = StyleSheet.create({
     height: '60%',
     padding: 16
   },
+  commentComposerAvoider: {
+    zIndex: 1
+  },
   reportSheet: {
     backgroundColor: '#111420',
     borderTopLeftRadius: 24,
@@ -1704,6 +1697,9 @@ const styles = StyleSheet.create({
     paddingTop: 10,
     borderTopWidth: 1,
     borderTopColor: '#1e2438'
+  },
+  keyboardLift: {
+    marginBottom: 22
   },
   commentInput: {
     flex: 1,

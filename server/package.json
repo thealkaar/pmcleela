@@ -5,7 +5,7 @@
   "main": "src/index.js",
   "scripts": {
     "start": "prisma migrate deploy && node src/index.js",
-    "dev": "node --watch src/index.js",
+    "dev": "node --watch src/dev-local.js",
     "postinstall": "prisma generate"
   },
   "engines": {

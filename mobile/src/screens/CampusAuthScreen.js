@@ -59,7 +59,7 @@ export default function CampusAuthScreen({ serverHost, onUpdateServerHost }) {
         <View style={styles.avatarCircle}>
           <Text style={{ fontSize: 36 }}>🏛️</Text>
         </View>
-        <Text style={styles.title}>पी एम सी Leela</Text>
+        <Text style={styles.title}>PMC लीला</Text>
         <Text style={styles.subtitle}>MANIT Bhopal Campus Pass</Text>
       </View>
 

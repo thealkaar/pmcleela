@@ -11,18 +11,21 @@ import {
   ScrollView,
   TextInput,
   Modal,
-  Platform
+  Platform,
+  Linking
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as IntentLauncher from 'expo-intent-launcher';
 import Constants from 'expo-constants';
-import * as Notifications from 'expo-notifications';
+import { isRunningInExpoGo } from 'expo';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import { getBaseUrl } from '../config';
+import { uploadAvatar } from '../utils/uploadAvatar';
 
 const DISMISSED_NOTIFICATIONS_KEY = '@pmc_leela_dismissed_notifications';
+const FEEDBACK_URL = 'https://forms.gle/CtC8UzXwHrUkZZgw6';
 
 const formatYearShort = (val) => {
   if (!val) return '1st';
@@ -36,10 +39,13 @@ const formatYearShort = (val) => {
 
 export default function MeProfileScreen({
   currentUser,
+  authToken,
   onUpdateCurrentUser,
   onLogout,
   serverHost,
   isTabActive,
+  notificationOpenRequest = 0,
+  onOpenReel,
   onDeleteAccount
 }) {
   const [showEditPersonaModal, setShowEditPersonaModal] = useState(false);
@@ -52,6 +58,7 @@ export default function MeProfileScreen({
   const [announcements, setAnnouncements] = useState([]);
   const [appRelease, setAppRelease] = useState(null);
   const [isDownloadingUpdate, setIsDownloadingUpdate] = useState(false);
+  const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
   const [dismissedNotifications, setDismissedNotifications] = useState({
     userId: null,
     announcementIds: [],
@@ -133,17 +140,32 @@ export default function MeProfileScreen({
 
     loadUpdates();
     const interval = setInterval(loadUpdates, 15 * 60 * 1000);
-    const notificationSubscription = Notifications.addNotificationReceivedListener(loadUpdates);
+    let notificationSubscription;
+    if (!(Platform.OS === 'android' && isRunningInExpoGo())) {
+      import('expo-notifications')
+        .then((Notifications) => {
+          if (active) {
+            notificationSubscription = Notifications.addNotificationReceivedListener(loadUpdates);
+          }
+        })
+        .catch((error) => console.warn('[Notifications] Could not listen for incoming notifications:', error.message));
+    }
     const subscription = AppState.addEventListener('change', state => {
       if (state === 'active') loadUpdates();
     });
     return () => {
       active = false;
       clearInterval(interval);
-      notificationSubscription.remove();
+      notificationSubscription?.remove();
       subscription.remove();
     };
   }, [isTabActive, serverHost]);
+
+  useEffect(() => {
+    if (isTabActive && notificationOpenRequest > 0) {
+      setShowNotifications(true);
+    }
+  }, [isTabActive, notificationOpenRequest]);
 
   const installUpdate = async () => {
     if (Platform.OS !== 'android' || !appRelease?.downloadUrl) {
@@ -199,6 +221,15 @@ export default function MeProfileScreen({
       }
     } finally {
       setIsDownloadingUpdate(false);
+    }
+  };
+
+  const openFeedbackForm = async () => {
+    try {
+      await Linking.openURL(FEEDBACK_URL);
+    } catch (error) {
+      console.error('[Feedback] Could not open feedback form:', error);
+      Alert.alert('Could not open feedback form', 'Please try again later.');
     }
   };
 
@@ -264,41 +295,54 @@ export default function MeProfileScreen({
         quality: 0.8
       });
 
-      if (!res.canceled && res.assets && res.assets[0]) {
-        onUpdateCurrentUser({
-          ...currentUser,
-          avatarUri: res.assets[0].uri
-        });
+      if (!res.canceled && res.assets?.[0]) {
+        setIsUploadingAvatar(true);
+        try {
+          const updatedUser = await uploadAvatar(serverHost, authToken, res.assets[0]);
+          await onUpdateCurrentUser({ ...currentUser, ...updatedUser });
+          Alert.alert('Profile image updated', 'Your profile image has been saved to your account.');
+        } catch (error) {
+          console.error('[Profile] Could not upload profile image:', error);
+          Alert.alert('Could not save profile image', error.message);
+        } finally {
+          setIsUploadingAvatar(false);
+        }
       }
-    } catch (err) {
-      console.log('Avatar pick error:', err);
+    } catch (error) {
+      console.error('[Profile] Could not select profile image:', error);
+      Alert.alert('Could not select profile image', error.message);
     }
   };
 
   const handleSavePersona = async () => {
-    if (!newPersona.trim()) return;
     const trimmed = newPersona.trim();
-    const updated = {
-      ...currentUser,
-      anonymousName: trimmed
-    };
-    onUpdateCurrentUser(updated);
-    setShowEditPersonaModal(false);
+    if (!trimmed) {
+      Alert.alert('Name required', 'Enter an anonymous persona name to continue.');
+      return;
+    }
 
     try {
-      await fetch(`${getBaseUrl(serverHost)}/api/auth/update-persona`, {
+      const response = await fetch(`${getBaseUrl(serverHost)}/api/auth/update-persona`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`
+        },
         body: JSON.stringify({
-          userId: currentUser?.id,
           newAnonymousName: trimmed
         })
       });
-    } catch (err) {
-      console.log('Update persona sync error:', err.message);
+      const result = await response.json();
+      if (!response.ok || !result.success || !result.user) {
+        throw new Error(result.message || 'Could not update the anonymous name. Please try again.');
+      }
+      await onUpdateCurrentUser({ ...currentUser, ...result.user });
+      setShowEditPersonaModal(false);
+      Alert.alert('Updated', 'Your anonymous persona name has been updated.');
+    } catch (error) {
+      console.error('[Profile] Could not update anonymous persona:', error);
+      Alert.alert('Name not updated', error.message || 'Could not update the anonymous name. Please try again.');
     }
-
-    Alert.alert('Updated', 'Your anonymous persona name has been updated.');
   };
 
   const handleDeleteAccount = () => {
@@ -325,8 +369,10 @@ export default function MeProfileScreen({
                       setIsDeleting(true);
                       const res = await fetch(`${getBaseUrl(serverHost)}/api/auth/delete-account`, {
                         method: 'DELETE',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ userId: currentUser?.id })
+                        headers: {
+                          'Content-Type': 'application/json',
+                          Authorization: `Bearer ${authToken}`
+                        }
                       });
                       const data = await res.json();
                       if (data.success) {
@@ -388,21 +434,36 @@ export default function MeProfileScreen({
           >
             <Ionicons name="settings-outline" size={21} color="#cbd5e1" />
           </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.headerIconButton}
+            onPress={openFeedbackForm}
+            accessibilityRole="button"
+            accessibilityLabel="Feedback"
+          >
+            <Ionicons name="chatbubble-ellipses-outline" size={21} color="#cbd5e1" />
+          </TouchableOpacity>
         </View>
       </View>
 
       <View style={styles.profileHero}>
         <View style={styles.profileHeroTop}>
-          <TouchableOpacity activeOpacity={0.85} onPress={handlePickAvatar} style={styles.avatarWrapper}>
-            {currentUser?.avatarUri || currentUser?.avatarUrl ? (
-              <Image source={{ uri: currentUser.avatarUri || currentUser.avatarUrl }} style={styles.avatarImage} />
+          <TouchableOpacity
+            activeOpacity={isUploadingAvatar ? 1 : 0.85}
+            onPress={handlePickAvatar}
+            disabled={isUploadingAvatar}
+            style={styles.avatarWrapper}
+          >
+            {currentUser?.avatarUrl ? (
+              <Image source={{ uri: currentUser.avatarUrl }} style={styles.avatarImage} />
             ) : (
               <View style={styles.avatarPlaceholder}>
                 <Ionicons name="person-outline" size={34} color="#94a3b8" />
               </View>
             )}
             <View style={styles.cameraBadge}>
-              <Ionicons name="camera-outline" size={13} color="#ffffff" />
+              {isUploadingAvatar
+                ? <ActivityIndicator size="small" color="#ffffff" />
+                : <Ionicons name="camera-outline" size={13} color="#ffffff" />}
             </View>
           </TouchableOpacity>
 
@@ -514,6 +575,13 @@ export default function MeProfileScreen({
         <Text style={styles.logoutButtonText}>Sign out</Text>
       </TouchableOpacity>
 
+      <View style={styles.creatorSignature}>
+        <View style={styles.signatureRule} />
+        <Text style={styles.signatureText}>
+          MADE BY <Text style={styles.signatureName}>_alkaar_</Text>
+        </Text>
+      </View>
+
       <Modal
         visible={showNotifications}
         transparent
@@ -591,10 +659,23 @@ export default function MeProfileScreen({
               )}
 
               {visibleAnnouncements.map(item => (
-                <View key={item.id} style={styles.announcementCard}>
+                <TouchableOpacity
+                  key={item.id}
+                  style={styles.announcementCard}
+                  activeOpacity={String(item.id).startsWith('reel_') ? 0.75 : 1}
+                  disabled={!String(item.id).startsWith('reel_')}
+                  onPress={() => {
+                    setShowNotifications(false);
+                    onOpenReel?.(String(item.id).slice('reel_'.length));
+                  }}
+                >
                   <View style={styles.notificationItemHeading}>
                     <View style={styles.notificationItemIcon}>
-                      <Ionicons name="megaphone-outline" size={16} color="#f472b6" />
+                      <Ionicons
+                        name={String(item.id).startsWith('reel_') ? 'videocam-outline' : 'megaphone-outline'}
+                        size={16}
+                        color="#f472b6"
+                      />
                     </View>
                     <Text style={styles.updateTitle}>{item.title}</Text>
                   </View>
@@ -602,7 +683,7 @@ export default function MeProfileScreen({
                   <Text style={styles.announcementDate}>
                     {item.createdAt ? new Date(item.createdAt).toLocaleString() : 'PMC announcement'}
                   </Text>
-                </View>
+                </TouchableOpacity>
               ))}
 
               {!hasAppUpdate && visibleAnnouncements.length === 0 && (
@@ -633,7 +714,7 @@ export default function MeProfileScreen({
             </View>
 
             <Text style={styles.inputDescription}>
-              This is the name other students see when chatting with you at पी एम सी and browsing Leela:
+              This is the name other students see when chatting with you on PMC and browsing Leela:
             </Text>
 
             <TextInput
@@ -1119,6 +1200,31 @@ const styles = StyleSheet.create({
     color: '#fda4af',
     fontWeight: '700',
     fontSize: 13
+  },
+  creatorSignature: {
+    alignItems: 'center',
+    marginTop: 28,
+    marginBottom: 6
+  },
+  signatureRule: {
+    width: 34,
+    height: 1,
+    backgroundColor: 'rgba(244, 114, 182, 0.38)',
+    marginBottom: 12
+  },
+  signatureText: {
+    color: '#64748b',
+    fontSize: 9,
+    fontWeight: '700',
+    letterSpacing: 2.1
+  },
+  signatureName: {
+    color: '#f9a8d4',
+    fontFamily: 'Georgia',
+    fontSize: 16,
+    fontStyle: 'italic',
+    fontWeight: '600',
+    letterSpacing: 1.2
   },
   modalOverlay: {
     flex: 1,

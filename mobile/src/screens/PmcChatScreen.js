@@ -39,7 +39,7 @@ const formatYearShort = (val) => {
   return val;
 };
 
-export default function PmcChatScreen({ serverHost, currentUser, onActiveChatChange }) {
+export default function PmcChatScreen({ serverHost, currentUser, authToken, isKeyboardVisible, onActiveChatChange }) {
   // Session States: 'idle' | 'waiting' | 'chatting' | 'ended'
   const [chatState, setChatState] = useState('idle');
   const [socket, setSocket] = useState(null);
@@ -253,7 +253,7 @@ export default function PmcChatScreen({ serverHost, currentUser, onActiveChatCha
       transports: ['websocket', 'polling'],
       reconnectionAttempts: 10,
       timeout: 10000,
-      auth: { userId: String(currentUser?.id || currentUser?.email || '') }
+      auth: { token: authToken }
     });
 
     s.on('online_stats', (stats) => {
@@ -274,7 +274,7 @@ export default function PmcChatScreen({ serverHost, currentUser, onActiveChatCha
       setMessages([]);
       setPartnerAlias(data.partnerAlias);
       setPartnerGender(data.partnerGender === 'female' ? 'female' : 'male');
-      setPartnerAcademicYear(data.partnerAcademicYear || 'Student');
+      setPartnerAcademicYear(data.partnerAcademicYear || '');
       setMyAlias(data.yourAlias);
       setMyAcademicYear(data.yourAcademicYear || currentUser?.academicYear || 'Student');
       setIsPartnerTyping(false);
@@ -307,7 +307,7 @@ export default function PmcChatScreen({ serverHost, currentUser, onActiveChatCha
       s.removeAllListeners();
       s.disconnect();
     };
-  }, [serverHost, currentUser?.id]);
+  }, [serverHost, currentUser?.id, authToken]);
 
   const wipeAndEndChat = (notice) => {
     setMessages([]);
@@ -557,7 +557,7 @@ export default function PmcChatScreen({ serverHost, currentUser, onActiveChatCha
     <KeyboardAvoidingView
       style={styles.chatCanvas}
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-      keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 20}
+      keyboardVerticalOffset={0}
     >
       {/* Sleek Top Navigation Bar */}
       <View style={styles.chatNav}>
@@ -587,11 +587,13 @@ export default function PmcChatScreen({ serverHost, currentUser, onActiveChatCha
               </View>
             </View>
             <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 1 }}>
-              <View style={styles.partnerYearPill}>
-                <Text style={styles.partnerYearPillText}>
-                  {formatYearShort(partnerAcademicYear)}
-                </Text>
-              </View>
+              {partnerAcademicYear && String(partnerAcademicYear).toLowerCase() !== 'student' ? (
+                <View style={styles.partnerYearPill}>
+                  <Text style={styles.partnerYearPillText}>
+                    {formatYearShort(partnerAcademicYear)}
+                  </Text>
+                </View>
+              ) : null}
               <Text style={styles.statusDotLine}>
                 • {isPartnerTyping ? 'typing...' : 'Online'}
               </Text>
@@ -679,7 +681,7 @@ export default function PmcChatScreen({ serverHost, currentUser, onActiveChatCha
       )}
 
       {/* Modern Floating Input Bar */}
-      <View style={styles.floatingInputBar}>
+      <View style={[styles.floatingInputBar, isKeyboardVisible && styles.keyboardLift]}>
         <TouchableOpacity style={styles.attachBtn} onPress={handlePickImage}>
           <Ionicons name="camera-outline" size={22} color="#e2e8f0" />
         </TouchableOpacity>
@@ -1167,6 +1169,9 @@ const styles = StyleSheet.create({
     backgroundColor: '#0c0e17',
     borderTopWidth: 1,
     borderTopColor: 'rgba(255,255,255,0.06)'
+  },
+  keyboardLift: {
+    marginBottom: 46
   },
   attachBtn: {
     padding: 8

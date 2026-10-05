@@ -142,6 +142,78 @@ async function sendOtpEmail(toEmail, otp) {
   }
 }
 
+async function sendPasswordResetEmail(toEmail, otp) {
+  const brevoApiKey = process.env.BREVO_API_KEY || '';
+  const fromEmail = process.env.FROM_EMAIL || (
+    process.env.NODE_ENV === 'production' ? '' : 'pmcleelaofficial@gmail.com'
+  );
+  const fromName = process.env.FROM_NAME || 'PMC लीला';
+  const htmlContent = `
+    <!DOCTYPE html>
+    <html lang="en">
+    <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head>
+    <body style="margin:0;padding:24px;background:#07080c;color:#f8fafc;font-family:Arial,sans-serif">
+      <main style="max-width:520px;margin:auto;padding:28px;border-radius:18px;background:#111422">
+        <h1 style="margin-top:0;color:#f472b6">PMC लीला password reset</h1>
+        <p>Use this one-time code to set a new password for your account:</p>
+        <p style="padding:18px;text-align:center;background:#0c0e17;border:1px dashed #ec4899;border-radius:12px;font-size:32px;font-weight:bold;letter-spacing:8px">${otp}</p>
+        <p>This code expires in 10 minutes and can only be used once. If you did not request a password reset, ignore this email. Your existing password has not been sent or changed.</p>
+      </main>
+    </body>
+    </html>
+  `;
+
+  if (!brevoApiKey || !fromEmail) {
+    if (process.env.NODE_ENV === 'production') {
+      const missing = [
+        !brevoApiKey && 'BREVO_API_KEY',
+        !fromEmail && 'FROM_EMAIL'
+      ].filter(Boolean);
+      console.error(`[BREVO] Password reset email configuration is missing: ${missing.join(', ')}.`);
+      return { success: false, error: 'Email delivery is not configured. Check BREVO_API_KEY and the verified FROM_EMAIL in the backend environment.' };
+    }
+    console.log(`[BREVO] API key is not configured. Development password reset OTP for ${toEmail}: ${otp}`);
+    return { success: true, simulated: true };
+  }
+
+  try {
+    const response = await fetch('https://api.brevo.com/v3/smtp/email', {
+      method: 'POST',
+      headers: {
+        'api-key': brevoApiKey,
+        accept: 'application/json',
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        sender: { name: fromName, email: fromEmail },
+        to: [{ email: toEmail }],
+        subject: 'PMC लीला - Password reset code',
+        htmlContent
+      })
+    });
+    const responseBody = await response.text();
+    let data = {};
+    if (responseBody) {
+      try {
+        data = JSON.parse(responseBody);
+      } catch {
+        data = { message: responseBody.slice(0, 500) };
+      }
+    }
+    if (!response.ok) {
+      const error = typeof data.message === 'string' ? data.message : 'Email delivery failed.';
+      console.error(`[BREVO] Password reset email failed (${response.status}): ${error}`);
+      return { success: false, error };
+    }
+    console.info(`[BREVO] Password reset email accepted by Brevo${data.messageId ? ` (message ID: ${data.messageId})` : ''}.`);
+    return { success: true, messageId: data?.messageId };
+  } catch (error) {
+    console.error('[BREVO] Password reset email network exception:', error.message);
+    return { success: false, error: error.message };
+  }
+}
+
 module.exports = {
-  sendOtpEmail
+  sendOtpEmail,
+  sendPasswordResetEmail
 };

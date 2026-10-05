@@ -25,8 +25,10 @@ function readJson(file, defaultValue = []) {
 function writeJson(file, data) {
   try {
     fs.writeFileSync(file, JSON.stringify(data, null, 2), 'utf-8');
+    return true;
   } catch (err) {
     console.error(`Error writing ${file}:`, err);
+    return false;
   }
 }
 
@@ -43,6 +45,8 @@ class LocalDB {
     this.appReleases = useLocalFiles ? readJson(APP_RELEASES_FILE, []) : [];
     // In-memory OTP storage: email -> { otp, studentData, expiresAt }
     this.otpStore = new Map();
+    this.passwordResetOtpStore = new Map();
+    this.passwordResetRequestStore = new Map();
   }
 
   /**
@@ -128,7 +132,8 @@ class LocalDB {
   findUserByAnonymousName(anonymousName) {
     if (!anonymousName) return null;
     this.refreshUsers();
-    return this.users.find(u => u.anonymousName.toLowerCase() === anonymousName.trim().toLowerCase());
+    const normalizedName = anonymousName.trim().toLowerCase();
+    return this.users.find(u => u.anonymousName?.trim().toLowerCase() === normalizedName);
   }
 
   findUserByIdentifier(identifier) {
@@ -191,7 +196,66 @@ class LocalDB {
     this.otpStore.delete(cleanEmail);
   }
 
-  registerVerifiedUser({ phone, email, password, gender, hostel, anonymousName, avatarUrl, academicYear }) {
+  savePasswordResetOtp(email, otp) {
+    const cleanEmail = email.trim().toLowerCase();
+    const now = Date.now();
+    const lastRequestedAt = this.passwordResetRequestStore.get(cleanEmail);
+    if (lastRequestedAt && now - lastRequestedAt < 60 * 1000) return false;
+    this.passwordResetRequestStore.set(cleanEmail, now);
+    this.passwordResetOtpStore.set(cleanEmail, {
+      otp: String(otp),
+      expiresAt: now + 10 * 60 * 1000,
+      attempts: 0
+    });
+    return true;
+  }
+
+  verifyPasswordResetOtp(email, otp) {
+    const cleanEmail = email.trim().toLowerCase();
+    const record = this.passwordResetOtpStore.get(cleanEmail);
+    if (!record) {
+      return { success: false, message: 'The reset code is invalid or expired. Request a new code and try again.' };
+    }
+    if (Date.now() > record.expiresAt) {
+      this.passwordResetOtpStore.delete(cleanEmail);
+      return { success: false, message: 'The reset code is invalid or expired. Request a new code and try again.' };
+    }
+    if (record.attempts >= 5) {
+      this.passwordResetOtpStore.delete(cleanEmail);
+      return { success: false, message: 'Too many incorrect attempts. Request a new reset code.' };
+    }
+    if (record.otp !== String(otp).trim()) {
+      record.attempts += 1;
+      if (record.attempts >= 5) this.passwordResetOtpStore.delete(cleanEmail);
+      return { success: false, message: 'The reset code is invalid or expired. Request a new code and try again.' };
+    }
+    this.passwordResetOtpStore.delete(cleanEmail);
+    return { success: true };
+  }
+
+  clearPasswordResetOtp(email) {
+    const cleanEmail = email.trim().toLowerCase();
+    this.passwordResetOtpStore.delete(cleanEmail);
+    this.passwordResetRequestStore.delete(cleanEmail);
+  }
+
+  updatePasswordByEmail(email, password) {
+    const user = this.findUserByEmail(email);
+    if (!user) return null;
+    const previousPassword = user.password;
+    const previousPasswordHash = user.passwordHash;
+    user.password = password;
+    delete user.passwordHash;
+    if (!writeJson(USERS_FILE, this.users)) {
+      if (previousPassword === undefined) delete user.password;
+      else user.password = previousPassword;
+      if (previousPasswordHash !== undefined) user.passwordHash = previousPasswordHash;
+      throw new Error('Could not save the new password. Please try again.');
+    }
+    return user;
+  }
+
+  registerVerifiedUser({ phone, email, password, gender, hostel, anonymousName, academicYear }) {
     const validation = this.validateManitEmail(email);
     if (!validation.valid) {
       throw new Error(validation.message);
@@ -200,7 +264,11 @@ class LocalDB {
     if (this.findUserByEmail(validation.email)) {
       throw new Error('This college email is already registered. Please login.');
     }
-    if (this.findUserByAnonymousName(anonymousName)) {
+    const cleanAnonymousName = typeof anonymousName === 'string' ? anonymousName.trim() : '';
+    if (!cleanAnonymousName) {
+      throw new Error('An anonymous persona name is required.');
+    }
+    if (this.findUserByAnonymousName(cleanAnonymousName)) {
       throw new Error('This anonymous persona name is already taken. Please choose another.');
     }
 
@@ -215,8 +283,7 @@ class LocalDB {
       gender: gender || 'male',
       academicYear: calculatedYear,
       hostel: hostel || 'Campus Hostel',
-      anonymousName: (anonymousName || '').trim(),
-      avatarUrl: avatarUrl || null,
+      anonymousName: cleanAnonymousName,
       isEmailVerified: true,
       createdAt: new Date().toISOString()
     };
@@ -247,9 +314,27 @@ class LocalDB {
   }
 
   updateUserPersona(userId, newAnonymousName) {
+    const cleanName = typeof newAnonymousName === 'string' ? newAnonymousName.trim() : '';
+    if (!cleanName) throw new Error('An anonymous persona name is required.');
+    this.refreshUsers();
     const user = this.users.find(u => u.id === userId);
     if (!user) return null;
-    user.anonymousName = newAnonymousName.trim();
+    const normalizedName = cleanName.toLowerCase();
+    const existingUser = this.users.find(
+      existing => existing.id !== userId && existing.anonymousName?.trim().toLowerCase() === normalizedName
+    );
+    if (existingUser && existingUser.id !== userId) {
+      throw new Error('This anonymous persona name is already taken. Please choose another.');
+    }
+    user.anonymousName = cleanName;
+    writeJson(USERS_FILE, this.users);
+    return user;
+  }
+
+  updateUserAvatar(userId, avatarStorageKey) {
+    const user = this.findUserById(userId);
+    if (!user) return null;
+    user.avatarStorageKey = avatarStorageKey;
     writeJson(USERS_FILE, this.users);
     return user;
   }
@@ -393,7 +478,7 @@ class LocalDB {
       user: user || 'Anonymous Student',
       userYear: userYear || 'Student',
       text,
-      time: 'Just now'
+      createdAt: new Date().toISOString()
     };
     if (!reel.comments) reel.comments = [];
     reel.comments.unshift(comment);
@@ -486,6 +571,12 @@ class LocalDB {
     const removed = new Set(tokens);
     this.pushTokens = this.pushTokens.filter(item => !removed.has(item.token));
     writeJson(PUSH_TOKENS_FILE, this.pushTokens);
+  }
+
+  removePushTokenForUser(userId, token) {
+    const countBefore = this.pushTokens.length;
+    this.pushTokens = this.pushTokens.filter(item => item.userId !== userId || item.token !== token);
+    if (this.pushTokens.length !== countBefore) writeJson(PUSH_TOKENS_FILE, this.pushTokens);
   }
 
   addAnnouncement({ id, title, message }) {
