@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { StyleSheet, View, Text, TouchableOpacity, Platform, ActivityIndicator, Animated, Easing, Keyboard, Linking, Alert } from 'react-native';
+import { StyleSheet, View, Text, TouchableOpacity, Platform, ActivityIndicator, Animated, Easing, Keyboard, Linking, Alert, AppState } from 'react-native';
 import { isRunningInExpoGo } from 'expo';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
@@ -65,12 +65,16 @@ function AppContent() {
   const [pendingReelId, setPendingReelId] = useState(null);
   const [notificationOpenRequest, setNotificationOpenRequest] = useState(0);
   const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
+  const [pushRegistrationStatus, setPushRegistrationStatus] = useState('idle');
+  const [pushRegistrationError, setPushRegistrationError] = useState('');
   const [serverHost, setServerHost] = useState(DEFAULT_HOST);
   const [activeChatPartner, setActiveChatPartner] = useState(null);
   const tabTransitionOpacity = React.useRef(new Animated.Value(1)).current;
   const tabTransitionId = React.useRef(0);
   const interfaceTransitionOpacity = React.useRef(new Animated.Value(0)).current;
   const handledNotificationResponse = React.useRef(null);
+  const pushRegistrationInFlight = React.useRef(false);
+  const pushRegistrationSuccessKey = React.useRef(null);
 
   useEffect(() => {
     const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
@@ -243,60 +247,93 @@ function AppContent() {
     loadSession();
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-    async function registerForPushNotifications() {
-      if (!currentUser?.id || !authToken || Platform.OS === 'web' || !Device.isDevice) return;
-      if (Platform.OS === 'android' && isRunningInExpoGo()) {
-        console.info('[Push] Android remote push registration requires a development or production build; continuing without push in Expo Go.');
+  const registerForPushNotifications = React.useCallback(async (requestPermission = false) => {
+    if (!currentUser?.id || !authToken || Platform.OS === 'web') return;
+    if (Platform.OS === 'android' && isRunningInExpoGo()) {
+      setPushRegistrationStatus('unsupported');
+      setPushRegistrationError('Remote push requires an installed development or production build, not Expo Go.');
+      return;
+    }
+    if (!Device.isDevice) {
+      setPushRegistrationStatus('unsupported');
+      setPushRegistrationError('Push notifications require a physical device.');
+      return;
+    }
+    if (pushRegistrationInFlight.current) return;
+
+    pushRegistrationInFlight.current = true;
+    setPushRegistrationStatus('registering');
+    setPushRegistrationError('');
+    try {
+      const Notifications = await import('expo-notifications');
+      if (Platform.OS === 'android') {
+        await Notifications.setNotificationChannelAsync('announcements', {
+          name: 'PMC announcements',
+          importance: Notifications.AndroidImportance.MAX,
+          vibrationPattern: [0, 250, 250, 250]
+        });
+      }
+
+      let permission = await Notifications.getPermissionsAsync();
+      if (permission.status !== 'granted' && requestPermission) {
+        permission = await Notifications.requestPermissionsAsync();
+      }
+      if (permission.status !== 'granted') {
+        setPushRegistrationStatus('permission-denied');
+        setPushRegistrationError('Allow PMC Leela notifications in Android settings to receive reel and broadcast alerts.');
         return;
       }
-      try {
-        const Notifications = await import('expo-notifications');
-        if (Platform.OS === 'android') {
-          await Notifications.setNotificationChannelAsync('announcements', {
-            name: 'PMC announcements',
-            importance: Notifications.AndroidImportance.MAX,
-            vibrationPattern: [0, 250, 250, 250]
-          });
-        }
 
-        let permission = await Notifications.getPermissionsAsync();
-        if (permission.status !== 'granted') {
-          permission = await Notifications.requestPermissionsAsync();
-        }
-        if (permission.status !== 'granted') return;
-
-        const projectId = Constants.easConfig?.projectId || Constants.expoConfig?.extra?.eas?.projectId;
-        if (!projectId) throw new Error('Expo project ID is missing from the app configuration.');
-        const tokenResult = await Notifications.getExpoPushTokenAsync({ projectId });
-        if (cancelled) return;
-
-        await AsyncStorage.setItem(PUSH_TOKEN_STORAGE_KEY, tokenResult.data);
-        const response = await fetch(`${getBaseUrl(serverHost)}/api/push/register`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${authToken}`
-          },
-          body: JSON.stringify({
-            token: tokenResult.data,
-            platform: Platform.OS
-          })
-        });
-        const result = await response.json();
-        if (!response.ok || !result.success) {
-          throw new Error(result.message || `Push registration failed (${response.status}).`);
-        }
-      } catch (error) {
-        console.warn('[Push] Could not register this device:', error.message);
+      const projectId = Constants.easConfig?.projectId || Constants.expoConfig?.extra?.eas?.projectId;
+      if (!projectId) throw new Error('Expo project ID is missing from the app configuration.');
+      const tokenResult = await Notifications.getExpoPushTokenAsync({ projectId });
+      const successKey = `${currentUser.id}:${authToken}:${serverHost}:${tokenResult.data}`;
+      if (pushRegistrationSuccessKey.current === successKey) {
+        setPushRegistrationStatus('registered');
+        return;
       }
+
+      const response = await fetch(`${getBaseUrl(serverHost)}/api/push/register`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`
+        },
+        body: JSON.stringify({
+          token: tokenResult.data,
+          platform: Platform.OS
+        })
+      });
+      const result = await response.json();
+      if (!response.ok || !result.success) {
+        throw new Error(result.message || `Push registration failed (${response.status}).`);
+      }
+      await AsyncStorage.setItem(PUSH_TOKEN_STORAGE_KEY, tokenResult.data);
+      pushRegistrationSuccessKey.current = successKey;
+      setPushRegistrationStatus('registered');
+    } catch (error) {
+      pushRegistrationSuccessKey.current = null;
+      setPushRegistrationStatus('error');
+      setPushRegistrationError(error.message || 'Could not register this device for notifications.');
+      console.warn('[Push] Could not register this device:', error.message);
+    } finally {
+      pushRegistrationInFlight.current = false;
     }
-    registerForPushNotifications();
-    return () => {
-      cancelled = true;
-    };
   }, [currentUser?.id, authToken, serverHost]);
+
+  useEffect(() => {
+    if (!currentUser?.id || !authToken) {
+      pushRegistrationSuccessKey.current = null;
+      setPushRegistrationStatus('idle');
+      setPushRegistrationError('');
+      return undefined;
+    }
+    registerForPushNotifications(true);
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state === 'active') registerForPushNotifications(false);
+    });
+    return () => subscription.remove();
+  }, [currentUser?.id, authToken, registerForPushNotifications]);
 
   const handleLoginSuccess = async (user, token) => {
     if (!token) {
@@ -447,7 +484,6 @@ function AppContent() {
             currentUser={currentUser}
             authToken={authToken}
             isTabActive={currentTab === 'leela'}
-            isKeyboardVisible={isKeyboardVisible}
             reelIdToOpen={pendingReelId}
             onReelOpened={handleReelOpened}
           />
@@ -463,6 +499,9 @@ function AppContent() {
           <MeProfileScreen
             currentUser={currentUser}
             authToken={authToken}
+            pushRegistrationStatus={pushRegistrationStatus}
+            pushRegistrationError={pushRegistrationError}
+            onEnablePushNotifications={() => registerForPushNotifications(true)}
             onUpdateCurrentUser={handleUpdateCurrentUser}
             onLogout={handleLogout}
             serverHost={serverHost}

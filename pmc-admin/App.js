@@ -228,7 +228,9 @@ export default function App() {
       const delivery = result.delivery;
       Alert.alert(
         'Broadcast published',
-        `Expo accepted ${delivery.sent} of ${delivery.registeredDevices} registered-device notifications. Device delivery depends on Android permissions and connectivity.${delivery.failed ? ` ${delivery.failed} failed; users can still see the message in Me.` : ''}${delivery.errors?.[0] ? `\n${delivery.errors[0]}` : ''}`
+        delivery.registeredDevices === 0
+          ? 'The message is saved in Me → Notifications, but no devices are registered for push alerts. Each student must install the latest app build, sign in, and allow notifications. Verify Firebase FCM credentials are configured for this EAS project.'
+          : `Expo accepted ${delivery.sent} of ${delivery.registeredDevices} registered-device notifications. Device delivery depends on Android permissions and connectivity.${delivery.failed ? ` ${delivery.failed} failed; users can still see the message in Me.` : ''}${delivery.errors?.[0] ? `\n${delivery.errors[0]}` : ''}`
       );
     } catch (error) {
       Alert.alert('Could not send broadcast', error.message);

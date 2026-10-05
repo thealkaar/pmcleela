@@ -40,6 +40,9 @@ const formatYearShort = (val) => {
 export default function MeProfileScreen({
   currentUser,
   authToken,
+  pushRegistrationStatus = 'idle',
+  pushRegistrationError = '',
+  onEnablePushNotifications,
   onUpdateCurrentUser,
   onLogout,
   serverHost,
@@ -594,6 +597,38 @@ export default function MeProfileScreen({
               <View style={styles.notificationHeaderText}>
                 <Text style={styles.modalTitle}>Notifications</Text>
                 <Text style={styles.notificationSubtitle}>Updates and messages from PMC</Text>
+                <View style={styles.pushStatusRow}>
+                  <Ionicons
+                    name={pushRegistrationStatus === 'registered' ? 'checkmark-circle' : 'notifications-outline'}
+                    size={15}
+                    color={pushRegistrationStatus === 'registered' ? '#4ade80' : '#f9a8d4'}
+                  />
+                  <Text style={styles.pushStatusText}>
+                    {pushRegistrationStatus === 'registered'
+                      ? 'This device is registered for push alerts.'
+                      : pushRegistrationStatus === 'registering'
+                        ? 'Registering this device for push alerts…'
+                        : pushRegistrationError || 'Push alert status is not available.'}
+                  </Text>
+                  {['permission-denied', 'error'].includes(pushRegistrationStatus) && (
+                    <TouchableOpacity
+                      onPress={() => {
+                        if (pushRegistrationStatus === 'permission-denied') {
+                          Linking.openSettings().catch((error) => {
+                            Alert.alert('Could not open settings', error.message);
+                          });
+                        } else {
+                          onEnablePushNotifications?.();
+                        }
+                      }}
+                      accessibilityRole="button"
+                    >
+                      <Text style={styles.pushSettingsAction}>
+                        {pushRegistrationStatus === 'permission-denied' ? 'Settings' : 'Retry'}
+                      </Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
               </View>
               <View style={styles.notificationHeaderActions}>
                 {notificationCount > 0 && (
@@ -1256,6 +1291,25 @@ const styles = StyleSheet.create({
     color: '#94a3b8',
     fontSize: 11,
     marginTop: 4
+  },
+  pushStatusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 7,
+    paddingRight: 4
+  },
+  pushStatusText: {
+    flex: 1,
+    color: '#aeb7c8',
+    fontSize: 10,
+    lineHeight: 14
+  },
+  pushSettingsAction: {
+    color: '#f9a8d4',
+    fontSize: 10,
+    fontWeight: '700',
+    padding: 4
   },
   clearNotificationsButton: {
     flexDirection: 'row',

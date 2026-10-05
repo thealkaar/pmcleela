@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "1061390003905",
+    "project_id": "pmcleela",
+    "storage_bucket": "pmcleela.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1061390003905:android:96d67b23ee004c16e62e40",
+        "android_client_info": {
+          "package_name": "com.pmcleela.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCE2DJudQM-_UWq7VxHztx_MDzl7SoFvlo"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

@@ -53,7 +53,6 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
   const [resetOtpTimer, setResetOtpTimer] = useState(0);
 
   // Register State (all initial fields blank - NO autofills)
-  const [fullName, setFullName] = useState('');
   const [phone, setPhone] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -145,10 +144,6 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
 
   // Step 1: Send OTP to MANIT Email
   const handleSendOtp = async () => {
-    if (!fullName.trim()) {
-      Alert.alert('Name Required', 'Please enter your full name.');
-      return;
-    }
     if (!phone.trim() || phone.trim().replace(/\D/g, '').length < 10) {
       Alert.alert('Phone Required', 'Please enter a valid 10-digit mobile number.');
       return;
@@ -188,7 +183,6 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           email: email.trim(),
-          fullName: fullName.trim(),
           phone: phone.trim()
         })
       });
@@ -226,7 +220,6 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
         body: JSON.stringify({
           email: email.trim(),
           otp: otpCode.trim(),
-          fullName: fullName.trim(),
           phone: phone.trim(),
           password: password.trim(),
           gender,
@@ -398,7 +391,7 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
               <Ionicons name="lock-closed-outline" size={18} color="#10b981" style={styles.termIcon} />
               <Text style={styles.termText}>
                 <Text style={styles.termBold}>Privacy & Authenticity: </Text>
-                Your name, email, and phone number are collected solely for student authenticity and safety. They are strictly private and never shown to others. Only your anonymous name is visible.
+                Your email and phone number are used for student authenticity and safety. They are kept private; only your anonymous name is shown to others.
               </Text>
             </View>
           </View>
@@ -659,17 +652,6 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
             </View>
 
             <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>Student Full Name</Text>
-              <TextInput
-                style={styles.inputField}
-                placeholder="Your full name"
-                placeholderTextColor="#64748b"
-                value={fullName}
-                onChangeText={setFullName}
-              />
-            </View>
-
-            <View style={styles.inputGroup}>
               <Text style={styles.inputLabel}>Phone Number</Text>
               <TextInput
                 style={styles.inputField}
@@ -809,7 +791,7 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
             <View style={styles.privacyBox}>
               <Ionicons name="lock-closed" size={14} color="#10b981" />
               <Text style={styles.privacyText}>
-                Your name, email & phone are strictly for safety. Only your anonymous name is shown to others.
+                Your email and phone are used for safety. Only your anonymous name is shown to others.
               </Text>
             </View>
 

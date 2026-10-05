@@ -13,6 +13,7 @@ import {
   ActivityIndicator,
   Share,
   Alert,
+  Keyboard,
   KeyboardAvoidingView,
   Platform
 } from 'react-native';
@@ -600,7 +601,6 @@ export default function LeelaReelsScreen({
   currentUser,
   authToken,
   isTabActive = true,
-  isKeyboardVisible = false,
   reelIdToOpen = null,
   onReelOpened
 }) {
@@ -627,6 +627,7 @@ export default function LeelaReelsScreen({
   const [commentText, setCommentText] = useState('');
   const [commentPosting, setCommentPosting] = useState(false);
   const [commentAgeNow, setCommentAgeNow] = useState(Date.now());
+  const [isCommentKeyboardVisible, setIsCommentKeyboardVisible] = useState(false);
   const likeQueuesRef = useRef(new Map());
 
   // Picker & Story Editor Modal States
@@ -766,6 +767,22 @@ export default function LeelaReelsScreen({
     if (!commentsModalVisible) return undefined;
     const interval = setInterval(() => setCommentAgeNow(Date.now()), 60 * 1000);
     return () => clearInterval(interval);
+  }, [commentsModalVisible]);
+
+  useEffect(() => {
+    if (!commentsModalVisible) {
+      setIsCommentKeyboardVisible(false);
+      return undefined;
+    }
+
+    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const showSubscription = Keyboard.addListener(showEvent, () => setIsCommentKeyboardVisible(true));
+    const hideSubscription = Keyboard.addListener(hideEvent, () => setIsCommentKeyboardVisible(false));
+    return () => {
+      showSubscription.remove();
+      hideSubscription.remove();
+    };
   }, [commentsModalVisible]);
 
   const handlePostComment = () => {
@@ -1103,7 +1120,11 @@ export default function LeelaReelsScreen({
         animationType="slide"
         onRequestClose={() => setCommentsModalVisible(false)}
       >
-        <View style={styles.commentsBackdrop}>
+        <KeyboardAvoidingView
+          style={styles.commentsBackdrop}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          keyboardVerticalOffset={0}
+        >
           <View style={styles.commentsSheet}>
             <View style={styles.sheetHandle} />
 
@@ -1115,9 +1136,11 @@ export default function LeelaReelsScreen({
             </View>
 
             <FlatList
+              style={styles.commentsList}
               data={selectedReel?.comments || []}
               keyExtractor={(item) => item.id}
               contentContainerStyle={{ paddingVertical: 10 }}
+              keyboardShouldPersistTaps="handled"
               renderItem={({ item }) => (
                 <View style={styles.commentRow}>
                   <View style={styles.commentAvatar}>
@@ -1150,12 +1173,13 @@ export default function LeelaReelsScreen({
               }
             />
 
-            <KeyboardAvoidingView
-              style={styles.commentComposerAvoider}
-              behavior="position"
-              keyboardVerticalOffset={-18}
+            <View
+              style={[
+                styles.commentComposerAvoider,
+                isCommentKeyboardVisible && styles.commentKeyboardLift
+              ]}
             >
-              <View style={[styles.addCommentBar, isKeyboardVisible && styles.keyboardLift]}>
+              <View style={styles.addCommentBar}>
                 <TextInput
                   style={styles.commentInput}
                   placeholder="Add comment..."
@@ -1171,9 +1195,9 @@ export default function LeelaReelsScreen({
                   <Text style={styles.postButtonText}>{commentPosting ? 'Posting...' : 'Post'}</Text>
                 </TouchableOpacity>
               </View>
-            </KeyboardAvoidingView>
+            </View>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       <Modal
@@ -1579,10 +1603,19 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
     height: '60%',
+    maxHeight: '85%',
     padding: 16
   },
+  commentsList: {
+    flex: 1,
+    minHeight: 0
+  },
   commentComposerAvoider: {
-    zIndex: 1
+    zIndex: 1,
+    elevation: 1
+  },
+  commentKeyboardLift: {
+    marginBottom: 46
   },
   reportSheet: {
     backgroundColor: '#111420',
@@ -1697,9 +1730,6 @@ const styles = StyleSheet.create({
     paddingTop: 10,
     borderTopWidth: 1,
     borderTopColor: '#1e2438'
-  },
-  keyboardLift: {
-    marginBottom: 22
   },
   commentInput: {
     flex: 1,

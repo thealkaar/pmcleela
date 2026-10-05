@@ -630,9 +630,11 @@ export default function PmcChatScreen({ serverHost, currentUser, authToken, isKe
       {/* Message Stream */}
       <FlatList
         ref={flatListRef}
+        style={styles.messageList}
         data={messages}
         keyExtractor={(item) => item.id}
         contentContainerStyle={styles.messageStream}
+        keyboardShouldPersistTaps="handled"
         onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: true })}
         renderItem={({ item }) => {
           const isMe = item.isMe;
@@ -1098,7 +1100,12 @@ const styles = StyleSheet.create({
   },
   messageStream: {
     paddingHorizontal: 16,
-    paddingVertical: 12
+    paddingVertical: 12,
+    flexGrow: 1
+  },
+  messageList: {
+    flex: 1,
+    minHeight: 0
   },
   msgRow: {
     marginVertical: 4,
