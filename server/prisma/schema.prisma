@@ -12,15 +12,41 @@ model PmcUser {
   id            String  @id
   email         String  @unique
   anonymousName String  @unique @map("anonymous_name")
+  leelaUsername String  @unique @map("leela_username")
   scholarNo     String  @map("scholar_no")
   phone         String?
   data          Json    @db.JsonB
   reelLikes     PmcReelLike[]
   reelReports   PmcReelReport[]
   pushTokens    PmcPushToken[]
+  chatReportsSubmitted PmcChatReport[] @relation("PmcChatReportReporter")
+  chatReportsReceived  PmcChatReport[] @relation("PmcChatReportReportedUser")
 
   @@index([phone], map: "pmc_users_phone_idx")
   @@map("pmc_users")
+}
+
+model PmcStudentIdentity {
+  email     String   @id
+  gender    String
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@map("pmc_student_identities")
+}
+
+model PmcAccountDeletionRequest {
+  id          String   @id
+  userId      String   @map("user_id")
+  email       String
+  displayName String   @map("display_name")
+  gender      String
+  status      String   @default("pending")
+  requestedAt DateTime @default(now()) @map("requested_at") @db.Timestamptz(6)
+  deleteAfter DateTime @map("delete_after") @db.Timestamptz(6)
+  resolvedAt  DateTime? @map("resolved_at") @db.Timestamptz(6)
+
+  @@index([status, deleteAfter], map: "pmc_account_deletion_requests_status_due_idx")
+  @@map("pmc_account_deletion_requests")
 }
 
 model PmcReel {
@@ -76,6 +102,20 @@ model PmcReelReport {
   @@unique([reelId, reporterId])
   @@index([status, createdAt(sort: Desc)], map: "pmc_reel_reports_status_created_at_idx")
   @@map("pmc_reel_reports")
+}
+
+model PmcChatReport {
+  id             String   @id
+  reporterId     String   @map("reporter_id")
+  reportedUserId String   @map("reported_user_id")
+  reason         String
+  blockedUntil   DateTime @map("blocked_until") @db.Timestamptz(6)
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  reporter       PmcUser  @relation("PmcChatReportReporter", fields: [reporterId], references: [id], onDelete: Cascade)
+  reportedUser   PmcUser  @relation("PmcChatReportReportedUser", fields: [reportedUserId], references: [id], onDelete: Cascade)
+
+  @@index([reportedUserId, createdAt(sort: Desc)], map: "pmc_chat_reports_reported_user_created_at_idx")
+  @@map("pmc_chat_reports")
 }
 
 model PmcPushToken {

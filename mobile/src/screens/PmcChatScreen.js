@@ -3,6 +3,7 @@ import {
   StyleSheet,
   Text,
   View,
+  ActivityIndicator,
   TextInput,
   TouchableOpacity,
   FlatList,
@@ -24,9 +25,9 @@ import { getSocketUrl } from '../config';
 const WAITING_STATUSES = [
   'Scanning Piya Milan Chauraha...',
   'Finding someone online across campus (Boy or Girl)...',
-  'Checking Hostels 1-10 & SAC...',
+  'Checking Hostels 1-12...',
   'Matching with a random student...',
-  'Connecting your anonymous heartbeat...'
+  'Connecting your anonymous soulmate...'
 ];
 
 const formatYearShort = (val) => {
@@ -47,6 +48,8 @@ export default function PmcChatScreen({ serverHost, currentUser, authToken, isKe
   const [inputText, setInputText] = useState('');
   const [partnerAlias, setPartnerAlias] = useState('');
   const [partnerGender, setPartnerGender] = useState('male'); // 'female' | 'male'
+  const [chatBlockedUntil, setChatBlockedUntil] = useState(null);
+  const [isReportingUser, setIsReportingUser] = useState(false);
   const [partnerAcademicYear, setPartnerAcademicYear] = useState('');
   const [myAlias, setMyAlias] = useState('');
   const [myAcademicYear, setMyAcademicYear] = useState('');
@@ -57,6 +60,8 @@ export default function PmcChatScreen({ serverHost, currentUser, authToken, isKe
 
   const flatListRef = useRef(null);
   const typingTimeoutRef = useRef(null);
+  const reportEndingChatRef = useRef(false);
+  const blockWarningShownRef = useRef(false);
 
   // Radar & Heart Pulse Animation for Waiting screen
   const pulseAnim = useRef(new Animated.Value(1)).current;
@@ -283,6 +288,25 @@ export default function PmcChatScreen({ serverHost, currentUser, authToken, isKe
       console.log('[PMC] Chat opened with', data.partnerAlias);
     });
 
+    s.on('partner_alias_updated', (data) => {
+      if (typeof data?.alias !== 'string' || !data.alias) return;
+      setPartnerAlias(data.alias);
+      setPartnerAcademicYear(data.academicYear || '');
+      setMessages((prev) => prev.map((message) => (
+        message.isMe
+          ? message
+          : {
+            ...message,
+            senderAlias: data.alias,
+            senderAcademicYear: data.academicYear || message.senderAcademicYear
+          }
+      )));
+    });
+
+    s.on('own_alias_updated', (data) => {
+      if (typeof data?.alias === 'string' && data.alias) setMyAlias(data.alias);
+    });
+
     s.on('receive_message', (msg) => {
       setMessages((prev) => [...prev, msg]);
       setIsPartnerTyping(false);
@@ -297,7 +321,33 @@ export default function PmcChatScreen({ serverHost, currentUser, authToken, isKe
     });
 
     s.on('partner_disconnected', (data) => {
+      if (reportEndingChatRef.current) {
+        reportEndingChatRef.current = false;
+        wipeAndEndChat();
+        return;
+      }
       wipeAndEndChat(data.reason || 'Stranger left the chauraha.');
+    });
+
+    s.on('chat_access_blocked', (data) => {
+      const message = data?.message || 'You have been blocked for two days because a girl reported you.';
+      setChatBlockedUntil(data?.blockedUntil || null);
+      setMessages([]);
+      setPartnerAlias('');
+      setPartnerAcademicYear('');
+      setMyAlias('');
+      setMyAcademicYear('');
+      setIsPartnerTyping(false);
+      setChatState('idle');
+      Alert.alert('PMC chat blocked', message);
+    });
+
+    s.on('connect_error', (error) => {
+      if (!error?.message?.includes('blocked for two days') || blockWarningShownRef.current) return;
+      blockWarningShownRef.current = true;
+      setChatBlockedUntil(error.data?.blockedUntil || null);
+      setChatState('idle');
+      Alert.alert('PMC chat blocked', error.message);
     });
 
     setSocket(s);
@@ -323,6 +373,12 @@ export default function PmcChatScreen({ serverHost, currentUser, authToken, isKe
   };
 
   const startSearch = () => {
+    const blockedUntil = Date.parse(chatBlockedUntil || '');
+    if (Number.isFinite(blockedUntil) && blockedUntil > Date.now()) {
+      Alert.alert('PMC chat blocked', 'You have been blocked for two days because a girl reported you.');
+      return;
+    }
+    if (chatBlockedUntil) setChatBlockedUntil(null);
     if (!socket?.connected) {
       Alert.alert('Connection unavailable', 'Could not connect to the chat server. Please try again.');
       return;
@@ -369,6 +425,37 @@ export default function PmcChatScreen({ serverHost, currentUser, authToken, isKe
               socket.emit('leave_chat');
             }
             wipeAndEndChat();
+          }
+        }
+      ]
+    );
+  };
+
+  const handleReportPartner = () => {
+    if (!socket?.connected || isReportingUser) {
+      Alert.alert('Report unavailable', 'Please wait for the chat connection and try again.');
+      return;
+    }
+    Alert.alert(
+      'Report this account?',
+      'Your report will be sent to PMC. The reported account will be blocked from PMC chat for two days.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Report account',
+          style: 'destructive',
+          onPress: () => {
+            setIsReportingUser(true);
+            reportEndingChatRef.current = true;
+            socket.emit('report_user', {}, (result) => {
+              setIsReportingUser(false);
+              if (!result?.success) {
+                reportEndingChatRef.current = false;
+                Alert.alert('Report not submitted', result?.message || 'Please try again.');
+                return;
+              }
+              Alert.alert('Report submitted', 'Thank you. This account has been blocked from PMC chat for two days.');
+            });
           }
         }
       ]
@@ -603,6 +690,19 @@ export default function PmcChatScreen({ serverHost, currentUser, authToken, isKe
 
         {/* Action Controls */}
         <View style={styles.navControls}>
+          {currentUser?.gender === 'female' && (
+            <TouchableOpacity
+              style={styles.reportChatButton}
+              onPress={handleReportPartner}
+              disabled={isReportingUser}
+              accessibilityRole="button"
+              accessibilityLabel="Report this chat account"
+            >
+              {isReportingUser
+                ? <ActivityIndicator size="small" color="#fca5a5" />
+                : <Ionicons name="flag-outline" size={15} color="#fca5a5" />}
+            </TouchableOpacity>
+          )}
           <TouchableOpacity style={styles.aglaPill} onPress={handleNext} activeOpacity={0.8}>
             <Ionicons name="refresh" size={14} color="#f472b6" />
             <Text style={styles.aglaText}>Next</Text>
@@ -1053,6 +1153,16 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8
+  },
+  reportChatButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(248, 113, 113, 0.10)',
+    borderWidth: 1,
+    borderColor: 'rgba(248, 113, 113, 0.22)'
   },
   aglaPill: {
     flexDirection: 'row',

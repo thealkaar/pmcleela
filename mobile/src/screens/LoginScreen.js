@@ -23,9 +23,12 @@ const SUGGESTED_PERSONAS = [
   'Tony Stark',
   'Saiyara',
   'PMC Regular',
-  'NTB Scholar',
+  'Pari',
   'Tommy',
-  'Neelam Paglu'
+  'Neelam Paglu',
+  'Babita',
+  'OG',
+  'CodingNinja'
 ];
 
 export default function LoginScreen({ serverHost, onLoginSuccess }) {
@@ -53,7 +56,6 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
   const [resetOtpTimer, setResetOtpTimer] = useState(0);
 
   // Register State (all initial fields blank - NO autofills)
-  const [phone, setPhone] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [gender, setGender] = useState(''); // 'female' | 'male'
@@ -63,6 +65,7 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
 
   // OTP State
   const [otpCode, setOtpCode] = useState('');
+  const [localTestOtp, setLocalTestOtp] = useState('');
   const [otpTimer, setOtpTimer] = useState(60);
   const [canResend, setCanResend] = useState(false);
   const [otpSentVisible, setOtpSentVisible] = useState(false);
@@ -144,10 +147,6 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
 
   // Step 1: Send OTP to MANIT Email
   const handleSendOtp = async () => {
-    if (!phone.trim() || phone.trim().replace(/\D/g, '').length < 10) {
-      Alert.alert('Phone Required', 'Please enter a valid 10-digit mobile number.');
-      return;
-    }
     if (!email.trim()) {
       Alert.alert('Email Required', 'Please enter your MANIT college email.');
       return;
@@ -182,15 +181,16 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          email: email.trim(),
-          phone: phone.trim()
+          email: email.trim()
         })
       });
 
       const data = await res.json();
       if (data.success) {
         setRegStep('otp');
-        setOtpCode('');
+        const devOtp = typeof data.devOtp === 'string' ? data.devOtp : '';
+        setLocalTestOtp(devOtp);
+        setOtpCode(devOtp);
         setOtpTimer(60);
         setCanResend(false);
         setOtpSentVisible(true);
@@ -220,7 +220,6 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
         body: JSON.stringify({
           email: email.trim(),
           otp: otpCode.trim(),
-          phone: phone.trim(),
           password: password.trim(),
           gender,
           academicYear,
@@ -391,7 +390,7 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
               <Ionicons name="lock-closed-outline" size={18} color="#10b981" style={styles.termIcon} />
               <Text style={styles.termText}>
                 <Text style={styles.termBold}>Privacy & Authenticity: </Text>
-                Your email and phone number are used for student authenticity and safety. They are kept private; only your anonymous name is shown to others.
+                Your email is used for student authenticity and safety. They are kept private; only your anonymous name is shown to others.
               </Text>
             </View>
           </View>
@@ -428,9 +427,13 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
   return (
     <KeyboardAvoidingView
       style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
     >
-      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={styles.scrollContent}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+      >
         {/* Brand Header */}
         <View style={styles.brandHeader}>
           <CoupleLogo size={80} />
@@ -652,18 +655,6 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
             </View>
 
             <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>Phone Number</Text>
-              <TextInput
-                style={styles.inputField}
-                placeholder="10-digit mobile number"
-                placeholderTextColor="#64748b"
-                value={phone}
-                onChangeText={setPhone}
-                keyboardType="phone-pad"
-              />
-            </View>
-
-            <View style={styles.inputGroup}>
               <Text style={styles.inputLabel}>College Email ID</Text>
               <TextInput
                 style={[
@@ -739,6 +730,12 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
                   </Text>
                 </TouchableOpacity>
               </View>
+              <View style={styles.genderNotice}>
+                <Ionicons name="information-circle-outline" size={16} color="#ff0202" />
+                <Text style={styles.genderNoticeText}>
+                  Choose carefully: Your gender cannot be changed later.
+                </Text>
+              </View>
             </View>
 
             {/* Academic Year Selection (Seniority / Respect) */}
@@ -791,7 +788,7 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
             <View style={styles.privacyBox}>
               <Ionicons name="lock-closed" size={14} color="#10b981" />
               <Text style={styles.privacyText}>
-                Your email and phone are used for safety. Only your anonymous name is shown to others.
+                Your email is used for verification. Only your anonymous name is shown to others.
               </Text>
             </View>
 
@@ -820,6 +817,9 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
                 Enter the 6-digit OTP code sent to:
               </Text>
               <Text style={styles.otpEmail}>{email.trim()}</Text>
+              {localTestOtp ? (
+                <Text style={styles.localOtpNotice}>Local test code: {localTestOtp}</Text>
+              ) : null}
             </View>
 
             <View style={styles.inputGroup}>
@@ -879,13 +879,17 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
             <Text style={styles.successModalEyebrow}>EMAIL VERIFICATION</Text>
             <Text style={styles.successModalTitle}>Code on its way</Text>
             <Text style={styles.successModalMessage}>
-              We sent a one-time code to your MANIT inbox.
+              {localTestOtp
+                ? 'Local test mode is active. Your verification code is shown below.'
+                : 'We sent a one-time code to your MANIT inbox.'}
             </Text>
             <View style={styles.successModalEmailRow}>
               <Ionicons name="mail-outline" size={17} color="#f9a8d4" />
               <Text style={styles.successModalEmail} numberOfLines={1}>{email.trim()}</Text>
             </View>
-            <Text style={styles.successModalHint}>If it’s not there, check your spam folder.</Text>
+            <Text style={styles.successModalHint}>
+              {localTestOtp ? `Local test code: ${localTestOtp}` : 'If it’s not there, check your spam folder.'}
+            </Text>
             <TouchableOpacity
               style={styles.successModalButton}
               onPress={() => setOtpSentVisible(false)}
@@ -1179,6 +1183,24 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 10
   },
+  genderNotice: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 7,
+    marginTop: 9,
+    paddingHorizontal: 10,
+    paddingVertical: 9,
+    borderRadius: 10,
+    backgroundColor: 'rgba(67, 64, 91, 0.13)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 1, 115, 0.18)'
+  },
+  genderNoticeText: {
+    flex: 1,
+    color: '#ff0000',
+    fontSize: 11,
+    lineHeight: 16
+  },
   genderBtn: {
     flex: 1,
     backgroundColor: '#0c0e17',
@@ -1253,6 +1275,12 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
     marginTop: 2
+  },
+  localOtpNotice: {
+    color: '#86efac',
+    fontSize: 12,
+    fontWeight: '700',
+    marginTop: 8
   },
   otpInputField: {
     backgroundColor: '#0c0e17',

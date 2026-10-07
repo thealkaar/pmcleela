@@ -395,22 +395,6 @@ function AppContent() {
     }
   };
 
-  const handleDeleteAccount = async () => {
-    setActiveChatPartner(null);
-    setAuthToken(null);
-    setCurrentUser(null);
-    setCurrentTab('pmc');
-    try {
-      await Promise.all([
-        AsyncStorage.removeItem(USER_STORAGE_KEY),
-        SecureStore.deleteItemAsync(AUTH_TOKEN_STORAGE_KEY),
-        AsyncStorage.removeItem(PUSH_TOKEN_STORAGE_KEY)
-      ]);
-    } catch (err) {
-      console.log('Error clearing session after account deletion:', err);
-    }
-  };
-
   if (isInitializing) {
     return (
       <Animated.View style={[styles.safeArea, { justifyContent: 'center', alignItems: 'center', opacity: interfaceTransitionOpacity }]}>
@@ -508,7 +492,6 @@ function AppContent() {
             isTabActive={currentTab === 'me'}
             notificationOpenRequest={notificationOpenRequest}
             onOpenReel={handleOpenReel}
-            onDeleteAccount={handleDeleteAccount}
           />
         </View>
       </Animated.View>

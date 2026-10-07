@@ -110,6 +110,7 @@ export default function App() {
   const [users, setUsers] = useState([]);
   const [reels, setReels] = useState([]);
   const [reports, setReports] = useState([]);
+  const [deletionRequests, setDeletionRequests] = useState([]);
   const [broadcasts, setBroadcasts] = useState([]);
   const [appReleases, setAppReleases] = useState([]);
   const [reportFilter, setReportFilter] = useState('pending');
@@ -153,6 +154,9 @@ export default function App() {
       } else if (tab === 'update') {
         const result = await request('/api/admin/app-releases', token);
         setAppReleases(result.data);
+      } else if (tab === 'account-deletions') {
+        const result = await request('/api/admin/account-deletion-requests', token);
+        setDeletionRequests(result.data);
       } else {
         const result = await request(`/api/admin/reports?status=${reportFilter}`, token);
         setReports(result.data);
@@ -355,6 +359,45 @@ export default function App() {
     }
   };
 
+  const decideDeletionRequest = (deletionRequest, decision) => {
+    const approving = decision === 'approve';
+    Alert.alert(
+      approving ? 'Approve account deletion?' : 'Reject account deletion?',
+      approving
+        ? `This immediately deletes ${deletionRequest.displayName} (${deletionRequest.email}) and their uploaded reels.`
+        : `Keep ${deletionRequest.displayName}'s account active and reject this request?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: approving ? 'Delete account' : 'Reject request',
+          style: approving ? 'destructive' : 'default',
+          onPress: async () => {
+            try {
+              const result = await request(
+                `/api/admin/account-deletion-requests/${encodeURIComponent(deletionRequest.id)}`,
+                token,
+                { method: 'PATCH', body: JSON.stringify({ decision }) }
+              );
+              setDeletionRequests(previous => previous.filter(item => item.id !== deletionRequest.id));
+              if (approving) {
+                setUsers(previous => previous.filter(user => user.id !== deletionRequest.userId));
+                setReels(previous => previous.filter(reel => reel.creatorId !== deletionRequest.userId));
+              }
+              Alert.alert(
+                approving ? 'Account deleted' : 'Request rejected',
+                result.warning || (approving
+                  ? 'The account and its stored reels have been deleted.'
+                  : 'The student account remains active.')
+              );
+            } catch (error) {
+              Alert.alert('Could not process request', error.message);
+            }
+          }
+        }
+      ]
+    );
+  };
+
   const data = useMemo(() => {
     if (tab === 'users') return users;
     if (tab === 'reels') {
@@ -364,8 +407,9 @@ export default function App() {
     }
     if (tab === 'broadcast') return broadcasts;
     if (tab === 'update') return appReleases;
+    if (tab === 'account-deletions') return deletionRequests;
     return reports;
-  }, [appReleases, broadcasts, reelOwnerFilter, reports, reels, tab, users]);
+  }, [appReleases, broadcasts, deletionRequests, reelOwnerFilter, reports, reels, tab, users]);
 
   const renderUser = ({ item }) => (
     <View style={styles.card}>
@@ -504,6 +548,44 @@ export default function App() {
     </View>
   );
 
+  const renderDeletionRequest = ({ item }) => (
+    <View style={styles.card}>
+      <View style={styles.reelDetails}>
+        <View style={styles.cardHeader}>
+          <View style={[styles.avatar, styles.userAvatar]}>
+            <Ionicons name="person-remove-outline" size={19} color="#fda4af" />
+          </View>
+          <View style={styles.cardHeading}>
+            <Text style={styles.cardTitle}>{item.displayName || 'Student account'}</Text>
+            <Text style={styles.cardSubtitle}>{item.email}</Text>
+          </View>
+          <Text style={styles.deletionPendingBadge}>PENDING</Text>
+        </View>
+        <View style={styles.detailGrid}>
+          <Detail label="Gender" value={item.gender} />
+          <Detail label="Requested" value={formatDateTime(item.requestedAt)} />
+          <Detail label="Auto-delete after" value={formatDateTime(item.deleteAfter)} />
+          <Detail label="Request ID" value={item.id} />
+        </View>
+        <View style={styles.reportActions}>
+          <TouchableOpacity
+            style={styles.deleteReelButton}
+            onPress={() => decideDeletionRequest(item, 'approve')}
+          >
+            <Ionicons name="trash-outline" size={16} color="#fff" />
+            <Text style={styles.primaryButtonText}>Approve & delete now</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.secondaryButton}
+            onPress={() => decideDeletionRequest(item, 'reject')}
+          >
+            <Text style={styles.secondaryButtonText}>Reject request</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </View>
+  );
+
   const renderBroadcastComposer = () => (
     <View style={styles.composerCard}>
       <Text style={styles.composerTitle}>Send a message to every student</Text>
@@ -616,6 +698,7 @@ export default function App() {
       >
         {[
           { id: 'reports', title: 'Reports', icon: 'flag-outline', count: reports.length },
+          { id: 'account-deletions', title: 'Deletion requests', icon: 'person-remove-outline', count: deletionRequests.length },
           { id: 'users', title: 'Users', icon: 'people-outline', count: users.length },
           { id: 'reels', title: 'Reels', icon: 'play-circle-outline', count: reels.length },
           { id: 'broadcast', title: 'Broadcast', icon: 'megaphone-outline', count: broadcasts.length },
@@ -635,7 +718,9 @@ export default function App() {
       <View style={styles.contentHeader}>
         <View>
           <Text style={styles.sectionTitle}>
-            {tab === 'users'
+            {tab === 'account-deletions'
+              ? 'Account deletion requests'
+              : tab === 'users'
               ? 'Student accounts'
               : tab === 'reels'
                 ? reelOwnerFilter ? `Reels · ${reelOwnerFilter.name}` : 'All reels'
@@ -646,7 +731,9 @@ export default function App() {
                     : 'Reel reports'}
           </Text>
           <Text style={styles.mutedText}>
-            {tab === 'reports'
+            {tab === 'account-deletions'
+              ? 'Approve or reject requests; unresolved requests auto-delete after 24 hours.'
+              : tab === 'reports'
               ? 'Review reports and moderate campus content.'
               : tab === 'broadcast'
                 ? 'Send a push notification to registered devices.'
@@ -696,7 +783,8 @@ export default function App() {
           data={data}
           keyExtractor={item => item.id}
           renderItem={
-            tab === 'users' ? renderUser
+            tab === 'account-deletions' ? renderDeletionRequest
+              : tab === 'users' ? renderUser
               : tab === 'reels' ? renderReel
                 : tab === 'reports' ? renderReport
                   : tab === 'broadcast' ? renderBroadcast
@@ -715,6 +803,7 @@ export default function App() {
               <Ionicons
                 name={
                   tab === 'reports' ? 'checkmark-done-outline'
+                    : tab === 'account-deletions' ? 'person-remove-outline'
                     : tab === 'users' ? 'people-outline'
                       : tab === 'reels' ? 'videocam-outline'
                         : tab === 'broadcast' ? 'megaphone-outline'
@@ -725,6 +814,7 @@ export default function App() {
               />
               <Text style={styles.emptyText}>
                 {tab === 'reports' ? `No ${reportFilter} reports`
+                  : tab === 'account-deletions' ? 'No pending deletion requests'
                   : tab === 'users' ? 'No student accounts'
                     : tab === 'reels' ? 'No reels'
                       : tab === 'broadcast' ? 'No broadcasts yet'
@@ -793,6 +883,12 @@ function formatDate(value) {
   if (!value) return '—';
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? '—' : date.toLocaleDateString();
+}
+
+function formatDateTime(value) {
+  if (!value) return '—';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString();
 }
 
 const styles = StyleSheet.create({
@@ -909,6 +1005,17 @@ const styles = StyleSheet.create({
     color: '#9fe5c8', fontSize: 9, fontWeight: '800', letterSpacing: 0.6,
     backgroundColor: 'rgba(16,185,129,0.09)', paddingHorizontal: 8, paddingVertical: 5,
     borderRadius: 8, overflow: 'hidden'
+  },
+  deletionPendingBadge: {
+    color: '#fcd34d',
+    fontSize: 9,
+    fontWeight: '800',
+    letterSpacing: 0.6,
+    backgroundColor: 'rgba(251,191,36,0.1)',
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    borderRadius: 8,
+    overflow: 'hidden'
   },
   viewContentButton: {
     flexDirection: 'row', alignItems: 'center', gap: 7, paddingHorizontal: 14, paddingVertical: 11,

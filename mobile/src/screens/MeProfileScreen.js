@@ -48,16 +48,25 @@ export default function MeProfileScreen({
   serverHost,
   isTabActive,
   notificationOpenRequest = 0,
-  onOpenReel,
-  onDeleteAccount
+  onOpenReel
 }) {
   const [showEditPersonaModal, setShowEditPersonaModal] = useState(false);
   const [newPersona, setNewPersona] = useState(currentUser?.anonymousName || 'Hostel Senior');
+  const [newLeelaUsername, setNewLeelaUsername] = useState(currentUser?.leelaUsername || 'Leela_Student');
+  const [isSavingUsernames, setIsSavingUsernames] = useState(false);
+  const [showMyReelsModal, setShowMyReelsModal] = useState(false);
+  const [myReels, setMyReels] = useState([]);
+  const [isLoadingMyReels, setIsLoadingMyReels] = useState(false);
+  const [myReelsLoadError, setMyReelsLoadError] = useState('');
+  const [deletingReelId, setDeletingReelId] = useState(null);
 
   const [showNotifications, setShowNotifications] = useState(false);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [showTermsModal, setShowTermsModal] = useState(false);
-  const [isDeleting, setIsDeleting] = useState(false);
+  const [isRequestingDeletion, setIsRequestingDeletion] = useState(false);
+  const [deletionRequest, setDeletionRequest] = useState(null);
+  const [isLoadingDeletionRequest, setIsLoadingDeletionRequest] = useState(false);
+  const [deletionRequestError, setDeletionRequestError] = useState('');
   const [announcements, setAnnouncements] = useState([]);
   const [appRelease, setAppRelease] = useState(null);
   const [isDownloadingUpdate, setIsDownloadingUpdate] = useState(false);
@@ -317,13 +326,23 @@ export default function MeProfileScreen({
     }
   };
 
-  const handleSavePersona = async () => {
-    const trimmed = newPersona.trim();
-    if (!trimmed) {
-      Alert.alert('Name required', 'Enter an anonymous persona name to continue.');
+  const handleSaveUsernames = async () => {
+    const chatUsername = newPersona.trim();
+    const leelaUsername = newLeelaUsername.trim();
+    if (!chatUsername || !leelaUsername) {
+      Alert.alert('Usernames required', 'Enter a username for both PMC chat and Leela.');
+      return;
+    }
+    if (chatUsername.length > 30 || leelaUsername.length > 30) {
+      Alert.alert('Username too long', 'Usernames cannot exceed 30 characters.');
+      return;
+    }
+    if (chatUsername.toLowerCase() === leelaUsername.toLowerCase()) {
+      Alert.alert('Choose different usernames', 'Your Leela username must be different from your PMC chat username.');
       return;
     }
 
+    setIsSavingUsernames(true);
     try {
       const response = await fetch(`${getBaseUrl(serverHost)}/api/auth/update-persona`, {
         method: 'POST',
@@ -332,71 +351,143 @@ export default function MeProfileScreen({
           Authorization: `Bearer ${authToken}`
         },
         body: JSON.stringify({
-          newAnonymousName: trimmed
+          anonymousName: chatUsername,
+          leelaUsername
         })
       });
       const result = await response.json();
       if (!response.ok || !result.success || !result.user) {
-        throw new Error(result.message || 'Could not update the anonymous name. Please try again.');
+        throw new Error(result.message || 'Could not update your usernames. Please try again.');
       }
       await onUpdateCurrentUser({ ...currentUser, ...result.user });
       setShowEditPersonaModal(false);
-      Alert.alert('Updated', 'Your anonymous persona name has been updated.');
+      Alert.alert('Updated', 'Your PMC chat and Leela usernames have been updated.');
     } catch (error) {
-      console.error('[Profile] Could not update anonymous persona:', error);
-      Alert.alert('Name not updated', error.message || 'Could not update the anonymous name. Please try again.');
+      console.error('[Profile] Could not update usernames:', error);
+      Alert.alert('Usernames not updated', error.message || 'Could not update your usernames. Please try again.');
+    } finally {
+      setIsSavingUsernames(false);
+    }
+  };
+
+  const loadMyReels = async () => {
+    setIsLoadingMyReels(true);
+    setMyReelsLoadError('');
+    try {
+      const response = await fetch(`${getBaseUrl(serverHost)}/api/reels/mine`, {
+        headers: { Authorization: `Bearer ${authToken}` }
+      });
+      const result = await response.json();
+      if (!response.ok || !result.success || !Array.isArray(result.data)) {
+        throw new Error(result.message || 'Could not load your reels.');
+      }
+      setMyReels(result.data);
+    } catch (error) {
+      console.error('[Profile] Could not load uploaded reels:', error);
+      setMyReelsLoadError(error.message || 'Could not load your reels. Please try again.');
+    } finally {
+      setIsLoadingMyReels(false);
+    }
+  };
+
+  const openMyReels = () => {
+    setShowMyReelsModal(true);
+    loadMyReels();
+  };
+
+  const deleteMyReel = (reel) => {
+    Alert.alert(
+      'Delete this reel?',
+      'This permanently removes your reel from Leela. This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete reel',
+          style: 'destructive',
+          onPress: async () => {
+            setDeletingReelId(reel.id);
+            try {
+              const response = await fetch(`${getBaseUrl(serverHost)}/api/reels/${encodeURIComponent(reel.id)}`, {
+                method: 'DELETE',
+                headers: { Authorization: `Bearer ${authToken}` }
+              });
+              const result = await response.json();
+              if (!response.ok || !result.success) {
+                throw new Error(result.message || 'Could not delete this reel.');
+              }
+              setMyReels(previous => previous.filter(item => item.id !== reel.id));
+            } catch (error) {
+              console.error(`[Profile] Could not delete reel ${reel.id}:`, error);
+              Alert.alert('Reel not deleted', error.message || 'Please try again.');
+            } finally {
+              setDeletingReelId(null);
+            }
+          }
+        }
+      ]
+    );
+  };
+
+  const loadDeletionRequest = async () => {
+    setIsLoadingDeletionRequest(true);
+    setDeletionRequestError('');
+    try {
+      const response = await fetch(`${getBaseUrl(serverHost)}/api/auth/deletion-request`, {
+        headers: { Authorization: `Bearer ${authToken}` }
+      });
+      const result = await response.json();
+      if (!response.ok || !result.success) {
+        throw new Error(result.message || 'Could not check the account deletion status.');
+      }
+      setDeletionRequest(result.data || null);
+    } catch (error) {
+      console.error('[Profile] Could not load deletion request status:', error);
+      setDeletionRequestError(error.message || 'Could not check the account deletion status.');
+    } finally {
+      setIsLoadingDeletionRequest(false);
     }
   };
 
   const handleDeleteAccount = () => {
+    if (deletionRequest) return;
     Alert.alert(
-      'Delete account',
-      'Are you sure you want to permanently delete your account? This will remove ALL your data including reels, chats, and profile. This action CANNOT be undone.',
+      'Request account deletion?',
+      'Your account will stay active while your request is pending. An admin can approve or reject it; if nobody acts, the account will be deleted automatically after 24 hours.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
-          text: 'Yes, Delete Everything',
+          text: 'Continue',
           style: 'destructive',
           onPress: () => {
-            // Second confirmation
             Alert.alert(
-              'Final confirmation',
-              `This will permanently delete the account "${currentUser?.anonymousName || 'your account'}" and all associated reels & data from the server. Are you absolutely sure?`,
+              'Submit deletion request?',
+              'The request will appear in the PMC Admin portal. If it is approved, your account will be deleted immediately. If rejected, your account remains active.',
               [
-                { text: 'No, Keep My Account', style: 'cancel' },
+                { text: 'Go back', style: 'cancel' },
                 {
-                  text: 'Delete Permanently',
+                  text: 'Submit request',
                   style: 'destructive',
                   onPress: async () => {
                     try {
-                      setIsDeleting(true);
+                      setIsRequestingDeletion(true);
                       const res = await fetch(`${getBaseUrl(serverHost)}/api/auth/delete-account`, {
-                        method: 'DELETE',
+                        method: 'POST',
                         headers: {
                           'Content-Type': 'application/json',
                           Authorization: `Bearer ${authToken}`
                         }
                       });
                       const data = await res.json();
-                      if (data.success) {
-                        setShowSettingsModal(false);
-                        setIsDeleting(false);
-                        // Immediately reset user session so app returns to Login screen
-                        onDeleteAccount();
-                        Alert.alert(
-                          'Account Deleted',
-                          'Your account and all associated data have been permanently removed.'
-                        );
-                        return;
-                      } else {
-                        Alert.alert('Error', data.message || 'Could not delete account. Please try again.');
+                      if (!res.ok || !data.success || !data.data) {
+                        throw new Error(data.message || 'Could not submit the account deletion request.');
                       }
-                    } catch (err) {
-                      console.log('Delete account error:', err);
-                      Alert.alert('Connection Error', 'Could not reach the server. Please check your connection and try again.');
+                      setDeletionRequest(data.data);
+                      Alert.alert('Request submitted', 'Your account remains active for now. It will be deleted after 24 hours unless an admin approves or rejects the request sooner.');
+                    } catch (error) {
+                      console.error('[Profile] Could not submit account deletion request:', error);
+                      Alert.alert('Request not submitted', error.message || 'Please check your connection and try again.');
                     } finally {
-                      setIsDeleting(false);
-                      setShowSettingsModal(false);
+                      setIsRequestingDeletion(false);
                     }
                   }
                 }
@@ -431,7 +522,10 @@ export default function MeProfileScreen({
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.headerIconButton}
-            onPress={() => setShowSettingsModal(true)}
+            onPress={() => {
+              setShowSettingsModal(true);
+              loadDeletionRequest();
+            }}
             accessibilityRole="button"
             accessibilityLabel="Account settings"
           >
@@ -478,7 +572,7 @@ export default function MeProfileScreen({
             <Text style={styles.displayName} numberOfLines={2}>
               {currentUser?.anonymousName || 'Campus Scholar'}
             </Text>
-            <Text style={styles.anonymousTag}>Your campus name</Text>
+            <Text style={styles.anonymousTag}>Your PMC chat username</Text>
           </View>
         </View>
 
@@ -517,12 +611,6 @@ export default function MeProfileScreen({
             <Text style={styles.privateValue}>{currentUser.scholarNo}</Text>
           </View>
         ) : null}
-        {currentUser?.phone ? (
-          <View style={styles.privateDetailRow}>
-            <Text style={styles.privateLabel}>Phone number</Text>
-            <Text style={styles.privateValue}>{currentUser.phone}</Text>
-          </View>
-        ) : null}
         <View style={styles.privateNotice}>
           <Ionicons name="shield-checkmark-outline" size={16} color="#f472b6" />
           <Text style={styles.privateFooterNote}>
@@ -534,11 +622,12 @@ export default function MeProfileScreen({
       <View style={styles.menuSection}>
         <Text style={styles.sectionTitle}>Preferences & safety</Text>
 
-        {/* Change Anonymous Persona */}
+        {/* Change PMC and Leela usernames */}
         <TouchableOpacity
           style={styles.menuItem}
           onPress={() => {
             setNewPersona(currentUser?.anonymousName || 'Hostel Senior');
+            setNewLeelaUsername(currentUser?.leelaUsername || 'Leela_Student');
             setShowEditPersonaModal(true);
           }}
           activeOpacity={0.8}
@@ -547,13 +636,30 @@ export default function MeProfileScreen({
             <Ionicons name="person-outline" size={18} color="#f9a8d4" />
           </View>
           <View style={{ flex: 1, marginLeft: 12 }}>
-            <Text style={styles.menuTitle}>Campus name</Text>
-            <Text style={styles.menuSubtitle}>{currentUser?.anonymousName || 'Hostel Senior'}</Text>
+            <Text style={styles.menuTitle}>Chat & Leela usernames</Text>
+            <Text style={styles.menuSubtitle}>
+              PMC: {currentUser?.anonymousName || 'Hostel Senior'} · Leela: {currentUser?.leelaUsername || 'Leela_Student'}
+            </Text>
           </View>
           <View style={styles.changeAction}>
             <Text style={styles.editActionText}>Edit</Text>
             <Ionicons name="chevron-forward" size={15} color="#f472b6" />
           </View>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.menuItem}
+          onPress={openMyReels}
+          activeOpacity={0.8}
+        >
+          <View style={[styles.menuIconBox, styles.reelsIconBox]}>
+            <Ionicons name="videocam-outline" size={18} color="#c4b5fd" />
+          </View>
+          <View style={{ flex: 1, marginLeft: 12 }}>
+            <Text style={styles.menuTitle}>My uploaded reels</Text>
+            <Text style={styles.menuSubtitle}>View or delete reels you posted</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={16} color="#64748b" />
         </TouchableOpacity>
 
         {/* View Community Terms & Rules */}
@@ -605,10 +711,10 @@ export default function MeProfileScreen({
                   />
                   <Text style={styles.pushStatusText}>
                     {pushRegistrationStatus === 'registered'
-                      ? 'This device is registered for push alerts.'
+                      ? 'You will receive all notifications.'
                       : pushRegistrationStatus === 'registering'
-                        ? 'Registering this device for push alerts…'
-                        : pushRegistrationError || 'Push alert status is not available.'}
+                        ? 'Registering this device for all notifications...'
+                        : pushRegistrationError || 'Notificaion status is not available.'}
                   </Text>
                   {['permission-denied', 'error'].includes(pushRegistrationStatus) && (
                     <TouchableOpacity
@@ -737,32 +843,114 @@ export default function MeProfileScreen({
         </View>
       </Modal>
 
-      {/* Edit Anonymous Persona Modal */}
+      {/* Edit PMC and Leela usernames */}
       <Modal visible={showEditPersonaModal} transparent animationType="fade">
         <View style={styles.modalOverlay}>
           <View style={styles.settingsCard}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Change Anonymous Persona</Text>
+              <Text style={styles.modalTitle}>Update usernames</Text>
               <TouchableOpacity onPress={() => setShowEditPersonaModal(false)}>
                 <Ionicons name="close" size={24} color="#94a3b8" />
               </TouchableOpacity>
             </View>
 
             <Text style={styles.inputDescription}>
-              This is the name other students see when chatting with you on PMC and browsing Leela:
+              Keep your identities separate: other students see your PMC name in chats and your Leela name on reels and comments.
             </Text>
 
+            <Text style={styles.usernameFieldLabel}>PMC chat username</Text>
             <TextInput
               style={styles.ipTextInput}
               value={newPersona}
               onChangeText={setNewPersona}
+              maxLength={30}
               placeholder="e.g. Hostel 4 Senior"
+              autoCapitalize="words"
+              placeholderTextColor="#64748b"
+            />
+            <Text style={styles.usernameFieldLabel}>Leela username</Text>
+            <TextInput
+              style={styles.ipTextInput}
+              value={newLeelaUsername}
+              onChangeText={setNewLeelaUsername}
+              maxLength={30}
+              placeholder="e.g. campus_creator"
+              autoCapitalize="none"
               placeholderTextColor="#64748b"
             />
 
-            <TouchableOpacity style={styles.saveIpButton} onPress={handleSavePersona}>
-              <Text style={styles.saveIpText}>Update Persona</Text>
+            <TouchableOpacity
+              style={[styles.saveIpButton, isSavingUsernames && styles.disabledButton]}
+              onPress={handleSaveUsernames}
+              disabled={isSavingUsernames}
+            >
+              {isSavingUsernames
+                ? <ActivityIndicator color="#fff" />
+                : <Text style={styles.saveIpText}>Save usernames</Text>}
             </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={showMyReelsModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowMyReelsModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.settingsCard}>
+            <View style={styles.modalHeader}>
+              <View>
+                <Text style={styles.modalTitle}>My uploaded reels</Text>
+                <Text style={styles.reelsModalSubtitle}>Only you can delete your reels.</Text>
+              </View>
+              <TouchableOpacity
+                onPress={() => setShowMyReelsModal(false)}
+                accessibilityRole="button"
+                accessibilityLabel="Close uploaded reels"
+              >
+                <Ionicons name="close" size={24} color="#94a3b8" />
+              </TouchableOpacity>
+            </View>
+            {isLoadingMyReels ? (
+              <ActivityIndicator color="#f472b6" style={styles.reelsLoading} />
+            ) : myReelsLoadError ? (
+              <View style={styles.reelsLoadError}>
+                <Text style={styles.emptyReelsText}>{myReelsLoadError}</Text>
+                <TouchableOpacity style={styles.reelsRetryButton} onPress={loadMyReels}>
+                  <Text style={styles.reelsRetryText}>Try again</Text>
+                </TouchableOpacity>
+              </View>
+            ) : myReels.length === 0 ? (
+              <Text style={styles.emptyReelsText}>You haven't uploaded any reels yet.</Text>
+            ) : (
+              <ScrollView style={styles.myReelsList} showsVerticalScrollIndicator={false}>
+                {myReels.map(reel => (
+                  <View key={reel.id} style={styles.myReelItem}>
+                    <View style={styles.myReelDetails}>
+                      <Text style={styles.myReelCaption} numberOfLines={2}>
+                        {reel.caption || 'Campus reel'}
+                      </Text>
+                      <Text style={styles.myReelDate}>
+                        {reel.createdAt ? new Date(reel.createdAt).toLocaleDateString() : 'Uploaded reel'}
+                      </Text>
+                    </View>
+                    <TouchableOpacity
+                      style={[styles.myReelDeleteButton, deletingReelId === reel.id && styles.disabledButton]}
+                      onPress={() => deleteMyReel(reel)}
+                      disabled={!!deletingReelId}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Delete reel ${reel.caption || ''}`}
+                    >
+                      {deletingReelId === reel.id
+                        ? <ActivityIndicator size="small" color="#fca5a5" />
+                        : <Ionicons name="trash-outline" size={18} color="#fca5a5" />}
+                    </TouchableOpacity>
+                  </View>
+                ))}
+              </ScrollView>
+            )}
           </View>
         </View>
       </Modal>
@@ -778,26 +966,51 @@ export default function MeProfileScreen({
               </TouchableOpacity>
             </View>
 
-            <View style={styles.deleteWarningBox}>
+            {isLoadingDeletionRequest ? (
+              <ActivityIndicator color="#f472b6" style={styles.deletionStatusLoading} />
+            ) : deletionRequest ? (
+              <View style={styles.deletePendingBox}>
+                <Ionicons name="time-outline" size={28} color="#fbbf24" />
+                <Text style={styles.deletePendingTitle}>Deletion request pending</Text>
+                <Text style={styles.deleteWarningText}>
+                  Your account remains active while an admin reviews the request. It will be deleted automatically after 24 hours if no decision is made.
+                </Text>
+                <Text style={styles.deletePendingDate}>
+                  Automatic deletion: {new Date(deletionRequest.deleteAfter).toLocaleString()}
+                </Text>
+              </View>
+            ) : (
+              <View style={styles.deleteWarningBox}>
               <Ionicons name="warning-outline" size={28} color="#ef4444" />
               <Text style={styles.deleteWarningTitle}>Delete My Account</Text>
               <Text style={styles.deleteWarningText}>
-                This will permanently remove your profile, all your uploaded reels, comments, and every piece of data associated with your account from our servers. This action cannot be reversed.
+                Submit a deletion request for admin review. If it is not approved or rejected within 24 hours, your account and its uploaded reels will be deleted automatically.
               </Text>
-            </View>
+              </View>
+            )}
+            {deletionRequestError ? (
+              <View>
+                <Text style={styles.deletionRequestError}>{deletionRequestError}</Text>
+                <TouchableOpacity onPress={loadDeletionRequest} style={styles.deletionRetryButton}>
+                  <Text style={styles.deletionRetryText}>Check again</Text>
+                </TouchableOpacity>
+              </View>
+            ) : null}
 
             <TouchableOpacity
               style={styles.deleteAccountButton}
               onPress={handleDeleteAccount}
-              disabled={isDeleting}
+              disabled={isRequestingDeletion || isLoadingDeletionRequest || !!deletionRequest || !!deletionRequestError}
               activeOpacity={0.85}
             >
-              {isDeleting ? (
+              {isRequestingDeletion ? (
                 <ActivityIndicator color="#ffffff" />
               ) : (
                 <>
-                  <Ionicons name="trash-outline" size={18} color="#ffffff" style={{ marginRight: 8 }} />
-                  <Text style={styles.deleteAccountText}>Delete My Account</Text>
+                  <Ionicons name={deletionRequest ? 'time-outline' : 'trash-outline'} size={18} color="#ffffff" style={{ marginRight: 8 }} />
+                  <Text style={styles.deleteAccountText}>
+                    {deletionRequest ? 'Request pending' : 'Request account deletion'}
+                  </Text>
                 </>
               )}
             </TouchableOpacity>
@@ -838,7 +1051,7 @@ export default function MeProfileScreen({
                 <Text style={styles.modalRuleTitle}>Respect every student</Text>
               </View>
               <Text style={styles.modalRuleText}>
-                Harassment, abusive language, bullying, doxxing, or threats will be directly escalated to MANIT Proctorial Board.
+                Harassment, bullying, doxxing, or threats will be directly escalated to MANIT Proctorial Board.
               </Text>
 
               <View style={styles.ruleHeading}>
@@ -846,7 +1059,7 @@ export default function MeProfileScreen({
                 <Text style={styles.modalRuleTitle}>Protect personal information</Text>
               </View>
               <Text style={styles.modalRuleText}>
-                Your phone number and scholar email are kept private and are never revealed to other students.
+                Your scholar email is kept private and is never revealed to other students.
               </Text>
             </ScrollView>
 
@@ -1198,6 +1411,9 @@ const styles = StyleSheet.create({
   personaIconBox: {
     backgroundColor: 'rgba(236, 72, 153, 0.12)'
   },
+  reelsIconBox: {
+    backgroundColor: 'rgba(167, 139, 250, 0.12)'
+  },
   safetyIconBox: {
     backgroundColor: 'rgba(96, 165, 250, 0.11)'
   },
@@ -1426,6 +1642,80 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     marginBottom: 12
   },
+  usernameFieldLabel: {
+    color: '#cbd5e1',
+    fontSize: 11,
+    fontWeight: '700',
+    marginBottom: 5
+  },
+  reelsModalSubtitle: {
+    color: '#94a3b8',
+    fontSize: 11,
+    marginTop: 4
+  },
+  reelsLoading: {
+    paddingVertical: 28
+  },
+  emptyReelsText: {
+    color: '#94a3b8',
+    fontSize: 12,
+    lineHeight: 18,
+    paddingVertical: 24,
+    textAlign: 'center'
+  },
+  reelsLoadError: {
+    alignItems: 'center'
+  },
+  reelsRetryButton: {
+    paddingHorizontal: 16,
+    paddingVertical: 9,
+    borderRadius: 10,
+    backgroundColor: 'rgba(236, 72, 153, 0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(236, 72, 153, 0.22)'
+  },
+  reelsRetryText: {
+    color: '#f9a8d4',
+    fontSize: 11,
+    fontWeight: '700'
+  },
+  myReelsList: {
+    maxHeight: 420
+  },
+  myReelItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#11131d',
+    borderWidth: 1,
+    borderColor: '#252a36',
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 9
+  },
+  myReelDetails: {
+    flex: 1,
+    marginRight: 10
+  },
+  myReelCaption: {
+    color: '#f1f5f9',
+    fontSize: 12,
+    fontWeight: '600'
+  },
+  myReelDate: {
+    color: '#94a3b8',
+    fontSize: 10,
+    marginTop: 5
+  },
+  myReelDeleteButton: {
+    width: 38,
+    height: 38,
+    borderRadius: 11,
+    backgroundColor: 'rgba(248, 113, 113, 0.10)',
+    borderWidth: 1,
+    borderColor: 'rgba(248, 113, 113, 0.22)',
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
   ipTextInput: {
     backgroundColor: '#191e32',
     borderRadius: 12,
@@ -1455,6 +1745,50 @@ const styles = StyleSheet.create({
     marginBottom: 16,
     borderWidth: 1,
     borderColor: 'rgba(239, 68, 68, 0.2)'
+  },
+  deletePendingBox: {
+    alignItems: 'center',
+    backgroundColor: 'rgba(251, 191, 36, 0.08)',
+    borderRadius: 14,
+    padding: 16,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(251, 191, 36, 0.2)'
+  },
+  deletePendingTitle: {
+    color: '#fbbf24',
+    fontSize: 15,
+    fontWeight: '700',
+    marginTop: 8,
+    marginBottom: 6
+  },
+  deletePendingDate: {
+    color: '#fde68a',
+    fontSize: 11,
+    fontWeight: '600',
+    marginTop: 10,
+    textAlign: 'center'
+  },
+  deletionStatusLoading: {
+    paddingVertical: 24
+  },
+  deletionRequestError: {
+    color: '#fda4af',
+    fontSize: 12,
+    lineHeight: 17,
+    textAlign: 'center',
+    marginBottom: 8
+  },
+  deletionRetryButton: {
+    alignSelf: 'center',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    marginBottom: 12
+  },
+  deletionRetryText: {
+    color: '#f9a8d4',
+    fontSize: 12,
+    fontWeight: '700'
   },
   deleteWarningTitle: {
     color: '#f87171',

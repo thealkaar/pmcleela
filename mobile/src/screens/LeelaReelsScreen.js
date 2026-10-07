@@ -21,6 +21,8 @@ import { useVideoPlayer, VideoView } from 'expo-video';
 import * as ImagePicker from 'expo-image-picker';
 import { File, UploadType } from 'expo-file-system';
 import { Ionicons } from '@expo/vector-icons';
+import io from 'socket.io-client';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import VideoSlideTrimmer from '../components/VideoSlideTrimmer';
 import { getBaseUrl, REEL_SHARE_BASE_URL } from '../config';
 
@@ -291,7 +293,7 @@ function VideoStoryEditor({
         <View style={styles.personaTagContainer}>
           <View style={styles.personaTagPill}>
             <Text style={styles.personaTagText}>
-              {currentUser?.anonymousName || 'PMC Student'} (You)
+              {currentUser?.leelaUsername || 'Leela Student'} (You)
             </Text>
             {currentUser?.academicYear ? (
               <Text style={styles.storyYearTagText}> • {formatYearShort(currentUser.academicYear)}</Text>
@@ -604,6 +606,7 @@ export default function LeelaReelsScreen({
   reelIdToOpen = null,
   onReelOpened
 }) {
+  const insets = useSafeAreaInsets();
   const [reels, setReels] = useState([]);
   const [activeReelIndex, setActiveReelIndex] = useState(0);
   const [isMuted, setIsMuted] = useState(false);
@@ -668,6 +671,68 @@ export default function LeelaReelsScreen({
 
   useEffect(() => {
     fetchReels();
+  }, [serverHost, authToken, isTabActive]);
+
+  useEffect(() => {
+    if (!authToken) return undefined;
+
+    const socket = io(getBaseUrl(serverHost), {
+      transports: ['websocket', 'polling'],
+      auth: { token: authToken }
+    });
+    let hasConnected = false;
+
+    socket.on('connect', () => {
+      if (hasConnected) fetchReels();
+      hasConnected = true;
+    });
+    socket.on('connect_error', (error) => {
+      console.error('[Leela] Realtime connection failed:', error.message);
+    });
+    socket.on('reel_like_updated', (event) => {
+      if (typeof event?.reelId !== 'string' || !Number.isFinite(event.likesCount)) return;
+      setReels((prev) => prev.map((reel) => (
+        reel.id === event.reelId ? { ...reel, likesCount: event.likesCount } : reel
+      )));
+    });
+    socket.on('reel_comment_added', (event) => {
+      if (
+        typeof event?.reelId !== 'string' ||
+        !event.comment?.id ||
+        !Number.isFinite(event.commentsCount)
+      ) return;
+
+      const confirmedComment = { ...event.comment, pending: false };
+      const updateReelComments = (reel) => {
+        if (reel.id !== event.reelId) return reel;
+        const comments = Array.isArray(reel.comments) ? reel.comments : [];
+        const pendingIndex = event.clientMutationId
+          ? comments.findIndex((comment) => comment.id === event.clientMutationId)
+          : -1;
+        const alreadyPresent = comments.some((comment) => comment.id === confirmedComment.id);
+        let updatedComments = comments;
+        if (pendingIndex >= 0) {
+          updatedComments = comments.map((comment, index) => (
+            index === pendingIndex ? confirmedComment : comment
+          ));
+        } else if (!alreadyPresent) {
+          updatedComments = [confirmedComment, ...comments];
+        }
+        return {
+          ...reel,
+          comments: updatedComments,
+          commentsCount: event.commentsCount
+        };
+      };
+
+      setReels((prev) => prev.map(updateReelComments));
+      setSelectedReel((prev) => prev ? updateReelComments(prev) : prev);
+    });
+
+    return () => {
+      socket.removeAllListeners();
+      socket.disconnect();
+    };
   }, [serverHost, authToken]);
 
   useEffect(() => {
@@ -792,7 +857,7 @@ export default function LeelaReelsScreen({
     const userYear = currentUser?.academicYear || 'Student';
     const optimisticComment = {
       id: `pending_${Date.now()}`,
-      user: currentUser?.anonymousName || 'Student',
+      user: currentUser?.leelaUsername || 'Student',
       userYear,
       text,
       createdAt: new Date().toISOString(),
@@ -818,7 +883,8 @@ export default function LeelaReelsScreen({
             Authorization: `Bearer ${authToken}`
           },
           body: JSON.stringify({
-            text
+            text,
+            clientMutationId: optimisticComment.id
           })
         });
         const result = await response.json();
@@ -1176,6 +1242,7 @@ export default function LeelaReelsScreen({
             <View
               style={[
                 styles.commentComposerAvoider,
+                { paddingBottom: insets.bottom },
                 isCommentKeyboardVisible && styles.commentKeyboardLift
               ]}
             >

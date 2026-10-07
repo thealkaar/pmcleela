@@ -24,6 +24,8 @@ const {
 } = require('./userAuth');
 const { sendPushToAll } = require('./pushNotifications');
 
+const CHAT_REPORT_BLOCK_MESSAGE = 'You have been blocked for two days because a girl reported you.';
+
 if (process.env.NODE_ENV === 'production' && !process.env.DATABASE_URL) {
   throw new Error('DATABASE_URL is required in production. Configure the Supabase PostgreSQL connection string.');
 }
@@ -49,6 +51,8 @@ function publicUser(user, req) {
   delete safeUser.passwordHash;
   delete safeUser.fullName;
   delete safeUser.avatarUri;
+  delete safeUser.phone;
+  delete safeUser.pmcChatBlockedUntil;
   if (safeUser.avatarStorageKey) {
     const avatarPath = `/api/users/${encodeURIComponent(safeUser.id)}/avatar?v=${encodeURIComponent(safeUser.avatarStorageKey)}`;
     safeUser.avatarUrl = req ? `${req.protocol}://${req.get('host')}${avatarPath}` : avatarPath;
@@ -56,6 +60,9 @@ function publicUser(user, req) {
     safeUser.avatarUrl = null;
   }
   delete safeUser.avatarStorageKey;
+  if (!safeUser.leelaUsername && safeUser.id) {
+    safeUser.leelaUsername = `Leela_${String(safeUser.id).slice(-8)}`;
+  }
   return safeUser;
 }
 
@@ -83,6 +90,64 @@ async function removeReelFiles(deletion) {
     await fs.promises.unlink(path.join(uploadsDir, safeFilename)).catch((error) => {
       if (error.code !== 'ENOENT') throw error;
     });
+  }
+}
+
+async function cleanupDeletedAccountMedia(deletion) {
+  const failures = [];
+  for (const key of deletion.deletedReelStorageKeys || []) {
+    try {
+      await r2Storage.deleteVideo(key);
+    } catch (error) {
+      failures.push(`reel storage ${key}`);
+      console.error(`[Cleanup] Could not delete reel storage object ${key}:`, error);
+    }
+  }
+  for (const filename of deletion.deletedReelFiles || []) {
+    const safeFilename = path.basename(filename);
+    if (safeFilename !== filename) {
+      failures.push(`unsafe reel filename ${filename}`);
+      console.error(`[Cleanup] Refused to delete reel file outside uploads: ${filename}`);
+      continue;
+    }
+    try {
+      await fs.promises.unlink(path.join(uploadsDir, safeFilename));
+    } catch (error) {
+      if (error.code !== 'ENOENT') {
+        failures.push(`reel file ${filename}`);
+        console.error(`[Cleanup] Could not delete reel file ${filename}:`, error);
+      }
+    }
+  }
+  if (deletion.deletedUser?.avatarStorageKey) {
+    try {
+      await r2Storage.deleteAvatar(deletion.deletedUser.avatarStorageKey);
+    } catch (error) {
+      failures.push('profile avatar');
+      console.error('[Cleanup] Could not delete profile avatar:', error);
+    }
+  }
+  return failures;
+}
+
+async function processDueAccountDeletionRequests() {
+  try {
+    const requests = await db.getDueAccountDeletionRequests();
+    for (const request of requests) {
+      try {
+        const deletion = await db.completeAccountDeletionRequest(request.id, 'auto_deleted');
+        if (!deletion) continue;
+        const failures = await cleanupDeletedAccountMedia(deletion);
+        console.info(
+          `[Account] Automatically deleted account for ${request.email} after the 24-hour request period.` +
+          (failures.length ? ` Media cleanup needs attention: ${failures.join(', ')}.` : '')
+        );
+      } catch (error) {
+        console.error(`[Account] Could not automatically process deletion request ${request.id}:`, error);
+      }
+    }
+  } catch (error) {
+    console.error('[Account] Could not load due account deletion requests:', error);
   }
 }
 
@@ -266,6 +331,12 @@ io.use(async (socket, next) => {
   try {
     const user = await db.findUserById(claims.sub);
     if (!user) return next(new Error('Student account is unavailable.'));
+    const blockedUntil = Date.parse(user.pmcChatBlockedUntil || '');
+    if (Number.isFinite(blockedUntil) && blockedUntil > Date.now()) {
+      const error = new Error(CHAT_REPORT_BLOCK_MESSAGE);
+      error.data = { blockedUntil: user.pmcChatBlockedUntil };
+      return next(error);
+    }
     socket.data.studentUser = user;
     socket.data.userId = user.id;
     return next();
@@ -283,6 +354,7 @@ io.on('connection', (socket) => {
   // Enqueue user with gender, anonymous alias, and academic year
   socket.on('search_partner', (data) => {
     const user = socket.data.studentUser;
+    if (isChatSocketBlocked(socket)) return;
     console.log(`[PMC] ${socket.id} searching partner for account ${user.id}`);
     matchmaker.enqueue(socket, {
       gender: user.gender || 'male',
@@ -293,18 +365,22 @@ io.on('connection', (socket) => {
   });
 
   socket.on('send_message', (data) => {
+    if (isChatSocketBlocked(socket)) return;
     matchmaker.sendMessage(socket, data.text);
   });
 
   socket.on('send_image', (data) => {
+    if (isChatSocketBlocked(socket)) return;
     matchmaker.sendImage(socket, data.image);
   });
 
   socket.on('typing_status', (data) => {
+    if (isChatSocketBlocked(socket)) return;
     matchmaker.sendTyping(socket, data.isTyping);
   });
 
   socket.on('next_partner', (data) => {
+    if (isChatSocketBlocked(socket)) return;
     console.log(`[PMC] ${socket.id} skipped to next partner`);
     const user = socket.data.studentUser;
     matchmaker.next(socket, {
@@ -315,10 +391,47 @@ io.on('connection', (socket) => {
     io.emit('online_stats', matchmaker.getOnlineStats());
   });
 
+  socket.on('report_user', async (data, acknowledge) => {
+    if (typeof acknowledge !== 'function') return;
+    try {
+      const reporter = socket.data.studentUser;
+      const reportedUserId = matchmaker.getPartnerUserId(socket);
+      if (reporter.gender !== 'female') {
+        return acknowledge({ success: false, message: 'Only female students can report accounts from PMC chat.' });
+      }
+      if (!reportedUserId) {
+        return acknowledge({ success: false, message: 'You can report an account only during an active PMC chat.' });
+      }
+      const report = await db.reportPmcChatUser(
+        reporter.id,
+        reportedUserId,
+        'Safety concern in PMC chat'
+      );
+      if (!report) {
+        return acknowledge({ success: false, message: 'The account could not be found. Please try again.' });
+      }
+      matchmaker.blockChatAccess(reportedUserId, report.blockedUntil);
+      acknowledge({ success: true });
+    } catch (error) {
+      console.error('[PMC] Could not process a chat report:', error);
+      acknowledge({ success: false, message: 'Could not submit this report. Please try again.' });
+    }
+  });
+
   socket.on('leave_chat', () => {
     matchmaker.leaveRoom(socket);
     io.emit('online_stats', matchmaker.getOnlineStats());
   });
+
+  function isChatSocketBlocked(socket) {
+    const blockedUntil = Date.parse(socket.data.chatBlockedUntil || '');
+    if (!Number.isFinite(blockedUntil) || blockedUntil <= Date.now()) return false;
+    socket.emit('chat_access_blocked', {
+      message: CHAT_REPORT_BLOCK_MESSAGE,
+      blockedUntil: new Date(blockedUntil).toISOString()
+    });
+    return true;
+  }
 
   socket.on('disconnect', () => {
     console.log(`[Socket] Disconnected: ${socket.id}`);
@@ -350,7 +463,7 @@ app.get('/api/admin/users', requireAdmin, async (req, res) => {
 
 app.post('/api/admin/users', requireAdmin, async (req, res) => {
   try {
-    const { phone, email, password, gender, hostel, anonymousName, academicYear } = req.body || {};
+    const { email, password, gender, hostel, anonymousName, academicYear } = req.body || {};
     if (
       typeof email !== 'string' ||
       typeof password !== 'string' ||
@@ -366,7 +479,6 @@ app.post('/api/admin/users', requireAdmin, async (req, res) => {
       return res.status(400).json({ success: false, message: 'Choose a valid student gender.' });
     }
     const user = await db.registerVerifiedUser({
-      phone: typeof phone === 'string' ? phone : '',
       email,
       password,
       gender,
@@ -405,6 +517,47 @@ app.delete('/api/admin/users/:id', requireAdmin, async (req, res) => {
   } catch (error) {
     console.error(`[Admin] Failed to delete user ${req.params.id}:`, error);
     res.status(500).json({ success: false, message: 'Could not fully remove this account and its content.' });
+  }
+});
+
+app.get('/api/admin/account-deletion-requests', requireAdmin, async (req, res) => {
+  try {
+    const data = await db.getAccountDeletionRequests({ status: 'pending' });
+    res.json({ success: true, data });
+  } catch (error) {
+    console.error('[Admin] Failed to list account deletion requests:', error);
+    res.status(500).json({ success: false, message: 'Could not load account deletion requests.' });
+  }
+});
+
+app.patch('/api/admin/account-deletion-requests/:id', requireAdmin, async (req, res) => {
+  try {
+    const { decision } = req.body || {};
+    if (!['approve', 'reject'].includes(decision)) {
+      return res.status(400).json({ success: false, message: 'Choose approve or reject.' });
+    }
+
+    if (decision === 'reject') {
+      const request = await db.rejectAccountDeletionRequest(req.params.id);
+      if (!request) return res.status(404).json({ success: false, message: 'Pending deletion request not found.' });
+      return res.json({ success: true, data: request });
+    }
+
+    const deletion = await db.completeAccountDeletionRequest(req.params.id, 'approved');
+    if (!deletion) {
+      return res.status(404).json({ success: false, message: 'Pending deletion request not found.' });
+    }
+    const cleanupFailures = await cleanupDeletedAccountMedia(deletion);
+    res.json({
+      success: true,
+      data: deletion.request,
+      warning: cleanupFailures.length
+        ? `Account deleted, but media cleanup needs attention: ${cleanupFailures.join(', ')}.`
+        : undefined
+    });
+  } catch (error) {
+    console.error(`[Admin] Failed to process account deletion request ${req.params.id}:`, error);
+    res.status(500).json({ success: false, message: 'Could not process this account deletion request.' });
   }
 });
 
@@ -736,7 +889,7 @@ app.get('/api/health', async (req, res) => {
 // 1. STEP 1: SEND EMAIL OTP FOR VERIFICATION
 app.post('/api/auth/send-otp', async (req, res) => {
   try {
-    const { email, phone } = req.body;
+    const { email } = req.body;
     
     // Validate student college email: must end with @stu.manit.ac.in
     const validation = db.validateManitEmail(email);
@@ -760,10 +913,7 @@ app.post('/api/auth/send-otp', async (req, res) => {
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
 
     // Store in DB OTP store
-    db.saveOtp(validation.email, otp, {
-      phone: (phone || '').trim(),
-      scholarNo: validation.scholarNo
-    });
+    db.saveOtp(validation.email, otp);
 
     // Send via Brevo Transactional Email Service
     const emailResult = await sendOtpEmail(validation.email, otp);
@@ -775,12 +925,16 @@ app.post('/api/auth/send-otp', async (req, res) => {
       });
     }
 
-    res.json({
+    const response = {
       success: true,
       message: `A 6-digit verification OTP has been dispatched to ${validation.email}. Please check your inbox / spam folder.`,
       email: validation.email,
       scholarNo: validation.scholarNo
-    });
+    };
+    if (process.env.PMC_LOCAL_MODE === '1' && emailResult.devOtp) {
+      response.devOtp = emailResult.devOtp;
+    }
+    res.json(response);
   } catch (err) {
     console.error('Send OTP error:', err);
     res.status(500).json({ success: false, message: err.message });
@@ -869,7 +1023,7 @@ app.post('/api/auth/verify-and-register', async (req, res) => {
         message: 'Student sign-in is temporarily unavailable. Please contact the app administrator.'
       });
     }
-    const { email, otp, phone, password, gender, academicYear, hostel, anonymousName } = req.body;
+    const { email, otp, password, gender, academicYear, hostel, anonymousName } = req.body;
     
     if (!email || !otp) {
       return res.status(400).json({
@@ -896,7 +1050,6 @@ app.post('/api/auth/verify-and-register', async (req, res) => {
 
     // Register user
     const newUser = await db.registerVerifiedUser({
-      phone: phone || otpResult.studentData?.phone || '',
       email,
       password,
       gender,
@@ -1038,79 +1191,63 @@ app.post('/api/auth/avatar', requireStudent, (req, res) => {
 // 5. UPDATE ANONYMOUS PERSONA
 app.post('/api/auth/update-persona', requireStudent, async (req, res) => {
   try {
-    const { newAnonymousName } = req.body || {};
+    const {
+      anonymousName,
+      leelaUsername,
+      newAnonymousName,
+      newLeelaUsername
+    } = req.body || {};
     const userId = req.studentUser.id;
-    if (!newAnonymousName) {
-      return res.status(400).json({ success: false, message: 'A new anonymous name is required.' });
+    const chatUsername = anonymousName ?? newAnonymousName;
+    const reelUsername = leelaUsername ?? newLeelaUsername;
+    if (
+      (chatUsername !== undefined && typeof chatUsername !== 'string') ||
+      (reelUsername !== undefined && typeof reelUsername !== 'string') ||
+      (chatUsername === undefined && reelUsername === undefined)
+    ) {
+      return res.status(400).json({ success: false, message: 'Provide a valid PMC chat username, Leela username, or both.' });
     }
-    const updatedUser = await db.updateUserPersona(userId, newAnonymousName);
+    const updatedUser = await db.updateUsernames(userId, {
+      anonymousName: chatUsername,
+      leelaUsername: reelUsername
+    });
     if (!updatedUser) {
       return res.status(404).json({ success: false, message: 'User not found.' });
     }
+    matchmaker.updateUserAlias(userId, updatedUser);
     res.json({ success: true, user: publicUser(updatedUser, req) });
   } catch (err) {
-    const duplicateName = /anonymous persona name is already taken/i.test(err.message);
-    const invalidName = /anonymous persona name is required/i.test(err.message);
-    if (!duplicateName && !invalidName) {
-      console.error('[Profile] Failed to update anonymous persona:', err);
+    const validationError = /Both PMC chat and Leela usernames are required|cannot exceed 30 characters|must be different|username is already taken/i.test(err.message);
+    if (!validationError) {
+      console.error('[Profile] Failed to update usernames:', err);
     }
-    res.status(duplicateName || invalidName ? 400 : 500).json({ success: false, message: err.message });
+    res.status(validationError ? 400 : 500).json({ success: false, message: err.message });
   }
 });
 
-// 6. DELETE USER ACCOUNT & ALL ASSOCIATED DATA
-app.delete('/api/auth/delete-account', requireStudent, async (req, res) => {
+// 6. SUBMIT ACCOUNT DELETION REQUEST
+app.post('/api/auth/delete-account', requireStudent, async (req, res) => {
   try {
-    const userId = req.studentUser.id;
-
-    const result = await db.deleteUser(userId);
-    if (!result) {
-      return res.status(404).json({ success: false, message: 'User not found.' });
-    }
-
-    // Delete associated reel video files from disk
-    for (const filename of result.deletedReelFiles) {
-      const filePath = path.join(uploadsDir, filename);
-      try {
-        if (fs.existsSync(filePath)) {
-          fs.unlinkSync(filePath);
-          console.log(`[Cleanup] Deleted reel file: ${filename}`);
-        }
-      } catch (fileErr) {
-        console.error(`[Cleanup] Failed to delete file ${filename}:`, fileErr.message);
-      }
-    }
-
-    const failedStorageDeletions = [];
-    if (result.deletedUser.avatarStorageKey) {
-      try {
-        await r2Storage.deleteAvatar(result.deletedUser.avatarStorageKey);
-      } catch (storageErr) {
-        failedStorageDeletions.push(result.deletedUser.avatarStorageKey);
-        console.error('[Cleanup] Failed to delete R2 profile image:', storageErr.message);
-      }
-    }
-    for (const key of result.deletedReelStorageKeys) {
-      try {
-        await r2Storage.deleteVideo(key);
-      } catch (storageErr) {
-        failedStorageDeletions.push(key);
-        console.error(`[Cleanup] Failed to delete R2 reel object ${key}:`, storageErr.message);
-      }
-    }
-
-    console.log(`[Account] Deleted user ${result.deletedUser.anonymousName} (${result.deletedUser.email}), removed ${result.deletedReelFiles.length} local reel files and ${result.deletedReelStorageKeys.length + Number(Boolean(result.deletedUser.avatarStorageKey)) - failedStorageDeletions.length} R2 objects`);
-
-    res.status(failedStorageDeletions.length ? 502 : 200).json({
-      success: failedStorageDeletions.length === 0,
-      message: failedStorageDeletions.length
-        ? 'Your account was deleted, but some profile or reel images could not be removed from storage.'
-        : 'Your account and all associated data have been permanently deleted.',
-      deletedReels: result.deletedReelFiles.length + result.deletedReelStorageKeys.length - failedStorageDeletions.length
+    const deletionRequest = await db.requestAccountDeletion(req.studentUser.id);
+    if (!deletionRequest) return res.status(404).json({ success: false, message: 'User not found.' });
+    res.status(202).json({
+      success: true,
+      message: 'Your account deletion request has been submitted. Your account will be deleted after 24 hours unless an admin approves or rejects it sooner.',
+      data: deletionRequest
     });
-  } catch (err) {
-    console.error('Delete account error:', err);
-    res.status(500).json({ success: false, message: err.message });
+  } catch (error) {
+    console.error('[Account] Could not submit deletion request:', error);
+    res.status(500).json({ success: false, message: 'Could not submit your account deletion request.' });
+  }
+});
+
+app.get('/api/auth/deletion-request', requireStudent, async (req, res) => {
+  try {
+    const deletionRequest = await db.getAccountDeletionRequestForUser(req.studentUser.id);
+    res.json({ success: true, data: deletionRequest });
+  } catch (error) {
+    console.error('[Account] Could not load deletion request:', error);
+    res.status(500).json({ success: false, message: 'Could not load your account deletion request.' });
   }
 });
 
@@ -1136,6 +1273,18 @@ app.get('/api/reels', allowOptionalStudent, async (req, res) => {
   } catch (err) {
     console.error('Reel feed error:', err);
     res.status(500).json({ success: false, message: 'Could not load reels.' });
+  }
+});
+
+app.get('/api/reels/mine', requireStudent, async (req, res) => {
+  try {
+    const reels = (await db.getReels(req.studentUser.id))
+      .filter(reel => reel.creatorId === req.studentUser.id);
+    const data = await Promise.all(reels.map(reel => withPlayableVideoUrl(reel, req)));
+    res.json({ success: true, count: data.length, data });
+  } catch (error) {
+    console.error('[Reels] Could not load the signed-in user reels:', error);
+    res.status(500).json({ success: false, message: 'Could not load your reels.' });
   }
 });
 
@@ -1170,7 +1319,7 @@ app.post('/api/reels/upload', requireStudent, (req, res) => {
     try {
       const { caption, audioTitle, tags, trimStart, trimEnd, cropMode } = req.body;
       const creatorId = req.studentUser.id;
-      const creatorName = req.studentUser.anonymousName;
+      const creatorName = req.studentUser.leelaUsername || `Leela_${String(req.studentUser.id).slice(-8)}`;
       const creatorYear = req.studentUser.academicYear;
       let videoUrl = req.body.videoUrl;
 
@@ -1246,7 +1395,7 @@ app.post('/api/reels/upload', requireStudent, (req, res) => {
       let notificationCreatorName = newReel.creatorName || 'A student';
       try {
         const creator = creatorId ? await db.findUserById(creatorId) : null;
-        notificationCreatorName = creator?.anonymousName || notificationCreatorName;
+        notificationCreatorName = creator?.leelaUsername || notificationCreatorName;
         await db.addAnnouncement({
           id: announcementId,
           title: `New reel by ${notificationCreatorName}`,
@@ -1303,10 +1452,40 @@ app.post('/api/reels/:id/like', requireStudent, async (req, res) => {
     if (!updatedReel) {
       return res.status(404).json({ success: false, message: 'Reel not found.' });
     }
+    io.emit('reel_like_updated', {
+      reelId: req.params.id,
+      likesCount: updatedReel.likesCount
+    });
     res.json({ success: true, data: updatedReel });
   } catch (error) {
     console.error('Reel like error:', error);
     res.status(500).json({ success: false, message: 'Could not update reel like.' });
+  }
+});
+
+app.delete('/api/reels/:id', requireStudent, async (req, res) => {
+  try {
+    const reel = await db.getReel(req.params.id);
+    if (!reel) return res.status(404).json({ success: false, message: 'Reel not found.' });
+    if (reel.creatorId !== req.studentUser.id) {
+      return res.status(403).json({ success: false, message: 'You can delete only reels uploaded by your account.' });
+    }
+
+    await removeReelFiles({
+      deletedReelFiles: reel.videoUrl?.includes('/uploads/')
+        ? [reel.videoUrl.split('/uploads/').pop()]
+        : [],
+      deletedReelStorageKeys: reel.videoStorageKey ? [reel.videoStorageKey] : []
+    });
+    const deletion = await db.deleteReel(req.params.id);
+    if (!deletion) return res.status(404).json({ success: false, message: 'Reel not found.' });
+    res.json({ success: true });
+  } catch (error) {
+    console.error(`[Reels] Could not delete reel ${req.params.id}:`, error);
+    res.status(502).json({
+      success: false,
+      message: 'Could not delete this reel and its video. Please try again.'
+    });
   }
 });
 
@@ -1339,17 +1518,21 @@ app.post('/api/reels/:id/report', requireStudent, async (req, res) => {
 // 9. POST COMMENT ON REEL
 app.post('/api/reels/:id/comments', requireStudent, async (req, res) => {
   try {
-    const { text } = req.body || {};
+    const { text, clientMutationId } = req.body || {};
     const cleanText = typeof text === 'string' ? text.trim() : '';
     if (!cleanText) {
       return res.status(400).json({ success: false, message: 'Comment text is required.' });
+    }
+    if (clientMutationId !== undefined &&
+      (typeof clientMutationId !== 'string' || clientMutationId.length > 100)) {
+      return res.status(400).json({ success: false, message: 'Comment request ID is invalid.' });
     }
     if (cleanText.length > 1000) {
       return res.status(400).json({ success: false, message: 'Comments cannot exceed 1,000 characters.' });
     }
     const comment = await db.addComment(
       req.params.id,
-      req.studentUser.anonymousName,
+      req.studentUser.leelaUsername || `Leela_${String(req.studentUser.id).slice(-8)}`,
       cleanText,
       req.studentUser.academicYear
     );
@@ -1357,6 +1540,12 @@ app.post('/api/reels/:id/comments', requireStudent, async (req, res) => {
       return res.status(404).json({ success: false, message: 'Reel not found.' });
     }
     const commentsCount = await db.countReelComments(req.params.id);
+    io.emit('reel_comment_added', {
+      reelId: req.params.id,
+      comment,
+      commentsCount,
+      clientMutationId: clientMutationId || null
+    });
     res.json({ success: true, data: comment, commentsCount });
   } catch (error) {
     console.error('Reel comment error:', error);
@@ -1381,6 +1570,9 @@ db.initialize().then(() => server.listen(PORT, '0.0.0.0', () => {
   console.log(`🛡️ MANIT Email OTP Verification: Active (domain: @stu.manit.ac.in)`);
   console.log(`❤️ Piya Milan Chauraha: Socket.io Matchmaker Active`);
   console.log(`🎬 Leela Reels: Video storage ${r2Storage.isConfigured() ? 'Cloudflare R2' : 'local disk'}`);
+  void processDueAccountDeletionRequests();
+  const deletionSweep = setInterval(processDueAccountDeletionRequests, 60 * 1000);
+  deletionSweep.unref();
   console.log(`===================================================`);
 })).catch((error) => {
   console.error('[Startup] Database initialization failed:', error);

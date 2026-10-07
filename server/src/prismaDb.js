@@ -16,6 +16,14 @@ function isAnonymousNameUniqueError(error) {
     );
 }
 
+function isLeelaUsernameUniqueError(error) {
+  if (error.code !== 'P2002') return false;
+  const target = error.meta?.target;
+  return Array.isArray(target)
+    ? target.some(field => field === 'leela_username' || field === 'leelaUsername')
+    : typeof target === 'string' && /leela[_A-Za-z]*username/i.test(target);
+}
+
 async function hashPassword(password) {
   const salt = crypto.randomBytes(16).toString('hex');
   const derivedKey = await scrypt(password, salt, 64);
@@ -90,15 +98,6 @@ class PrismaDB {
     return user?.data || null;
   }
 
-  async findUserByPhone(phone) {
-    if (!phone) return null;
-    const cleanPhone = phone.trim().replace(/\D/g, '');
-    const user = await this.client.pmcUser.findFirst({
-      where: { phone: cleanPhone }
-    });
-    return user?.data || null;
-  }
-
   async findUserByAnonymousName(anonymousName) {
     if (!anonymousName) return null;
     const user = await this.client.pmcUser.findUnique({
@@ -134,7 +133,6 @@ class PrismaDB {
   }
 
   async registerVerifiedUser({
-    phone,
     email,
     password,
     gender,
@@ -148,6 +146,7 @@ class PrismaDB {
     const cleanAnonymousName = (anonymousName || '').trim();
     if (!cleanAnonymousName) throw new Error('An anonymous persona name is required.');
     if (typeof password !== 'string' || !password.trim()) throw new Error('A password is required.');
+    if (gender !== 'male' && gender !== 'female') throw new Error('Choose a valid student gender.');
 
     if (await this.findUserByEmail(validation.email)) {
       throw new Error('This college email is already registered. Please login.');
@@ -156,30 +155,44 @@ class PrismaDB {
       throw new Error('This anonymous persona name is already taken. Please choose another.');
     }
 
+    const userId = `usr_${uuidv4().slice(0, 8)}`;
     const newUser = {
-      id: `usr_${uuidv4().slice(0, 8)}`,
+      id: userId,
       email: validation.email,
       scholarNo: validation.scholarNo,
-      phone: (phone || '').trim(),
       gender: gender || 'male',
       academicYear: academicYear || this.getAcademicYearFromScholarNo(validation.scholarNo),
       hostel: hostel || 'Campus Hostel',
       anonymousName: cleanAnonymousName,
+      leelaUsername: `Leela_${userId.slice(-8)}`,
       isEmailVerified: true,
       createdAt: new Date().toISOString()
     };
     const passwordHash = await hashPassword(password.trim());
 
     try {
-      await this.client.pmcUser.create({
-        data: {
-          id: newUser.id,
-          email: newUser.email,
-          anonymousName: newUser.anonymousName.toLowerCase(),
-          scholarNo: newUser.scholarNo.toLowerCase(),
-          phone: newUser.phone.replace(/\D/g, '') || null,
-          data: { ...newUser, passwordHash }
+      await this.client.$transaction(async (transaction) => {
+        const identity = await transaction.pmcStudentIdentity.findUnique({
+          where: { email: validation.email }
+        });
+        if (identity && identity.gender !== gender) {
+          throw new Error(`This MANIT email is registered as ${identity.gender === 'female' ? 'a girl' : 'a boy'}. Re-registration must use the same gender.`);
         }
+        if (!identity) {
+          await transaction.pmcStudentIdentity.create({
+            data: { email: validation.email, gender }
+          });
+        }
+        await transaction.pmcUser.create({
+          data: {
+            id: newUser.id,
+            email: newUser.email,
+            anonymousName: newUser.anonymousName.toLowerCase(),
+            leelaUsername: newUser.leelaUsername.toLowerCase(),
+            scholarNo: newUser.scholarNo.toLowerCase(),
+            data: { ...newUser, passwordHash }
+          }
+        });
       });
     } catch (error) {
       if (isAnonymousNameUniqueError(error)) {
@@ -197,6 +210,115 @@ class PrismaDB {
 
   registerUser(userData) {
     return this.registerVerifiedUser(userData);
+  }
+
+  async requestAccountDeletion(userId) {
+    const user = await this.client.pmcUser.findUnique({ where: { id: userId } });
+    if (!user) return null;
+    const existing = await this.client.pmcAccountDeletionRequest.findFirst({
+      where: { userId, status: 'pending' }
+    });
+    if (existing) return existing;
+
+    const requestedAt = new Date();
+    try {
+      return await this.client.pmcAccountDeletionRequest.create({
+        data: {
+          id: `deletion_${uuidv4()}`,
+          userId,
+          email: user.email,
+          displayName: user.data.anonymousName || 'Student',
+          gender: user.data.gender || 'male',
+          requestedAt,
+          deleteAfter: new Date(requestedAt.getTime() + 24 * 60 * 60 * 1000)
+        }
+      });
+    } catch (error) {
+      if (error.code === 'P2002') {
+        const pending = await this.client.pmcAccountDeletionRequest.findFirst({
+          where: { userId, status: 'pending' }
+        });
+        if (pending) return pending;
+      }
+      throw error;
+    }
+  }
+
+  async getAccountDeletionRequestForUser(userId) {
+    return this.client.pmcAccountDeletionRequest.findFirst({
+      where: { userId, status: 'pending' },
+      orderBy: { requestedAt: 'desc' }
+    });
+  }
+
+  async getAccountDeletionRequests({ status = 'pending' } = {}) {
+    return this.client.pmcAccountDeletionRequest.findMany({
+      where: status ? { status } : undefined,
+      orderBy: { requestedAt: 'asc' }
+    });
+  }
+
+  async getDueAccountDeletionRequests(now = new Date()) {
+    return this.client.pmcAccountDeletionRequest.findMany({
+      where: { status: 'pending', deleteAfter: { lte: now } },
+      orderBy: { deleteAfter: 'asc' }
+    });
+  }
+
+  async rejectAccountDeletionRequest(requestId) {
+    const result = await this.client.pmcAccountDeletionRequest.updateMany({
+      where: { id: requestId, status: 'pending' },
+      data: { status: 'rejected', resolvedAt: new Date() }
+    });
+    if (!result.count) return null;
+    return this.client.pmcAccountDeletionRequest.findUnique({ where: { id: requestId } });
+  }
+
+  async completeAccountDeletionRequest(requestId, status = 'approved') {
+    return this.client.$transaction(async (transaction) => {
+      const claim = await transaction.pmcAccountDeletionRequest.updateMany({
+        where: { id: requestId, status: 'pending' },
+        data: { status: 'processing' }
+      });
+      if (!claim.count) return null;
+      const request = await transaction.pmcAccountDeletionRequest.findUnique({
+        where: { id: requestId }
+      });
+      if (!request) return null;
+
+      const user = await transaction.pmcUser.findUnique({ where: { id: request.userId } });
+      let deletedUser = null;
+      let reels = [];
+      if (user) {
+        deletedUser = user.data;
+        reels = await transaction.pmcReel.findMany({
+          where: { creatorId: request.userId },
+          select: { data: true }
+        });
+        await transaction.pmcReel.deleteMany({ where: { creatorId: request.userId } });
+        await transaction.pmcUser.delete({ where: { id: request.userId } });
+      }
+
+      const updatedRequest = await transaction.pmcAccountDeletionRequest.update({
+        where: { id: requestId },
+        data: { status, resolvedAt: new Date() }
+      });
+      const deletedReelFiles = [];
+      const deletedReelStorageKeys = [];
+      for (const { data } of reels) {
+        if (data.videoStorageKey) deletedReelStorageKeys.push(data.videoStorageKey);
+        if (data.videoUrl && data.videoUrl.includes('/uploads/')) {
+          const filename = data.videoUrl.split('/uploads/').pop();
+          if (filename) deletedReelFiles.push(filename);
+        }
+      }
+      return {
+        deletedUser,
+        deletedReelFiles,
+        deletedReelStorageKeys,
+        request: updatedRequest
+      };
+    });
   }
 
   async loginUser(identifier, password) {
@@ -229,33 +351,111 @@ class PrismaDB {
     return updated.data;
   }
 
-  async updateUserPersona(userId, newAnonymousName) {
-    const cleanName = typeof newAnonymousName === 'string' ? newAnonymousName.trim() : '';
-    if (!cleanName) throw new Error('An anonymous persona name is required.');
+  async updateUsernames(userId, { anonymousName, leelaUsername }) {
     const user = await this.client.pmcUser.findUnique({ where: { id: userId } });
     if (!user) return null;
 
-    const existingUser = await this.client.pmcUser.findFirst({
-      where: {
-        anonymousName: cleanName.toLowerCase(),
-        NOT: { id: userId }
-      }
-    });
-    if (existingUser) {
-      throw new Error('This anonymous persona name is already taken. Please choose another.');
+    const chatName = typeof anonymousName === 'string'
+      ? anonymousName.trim()
+      : user.data.anonymousName;
+    const reelName = typeof leelaUsername === 'string'
+      ? leelaUsername.trim()
+      : user.data.leelaUsername;
+    if (!chatName || !reelName) {
+      throw new Error('Both PMC chat and Leela usernames are required.');
+    }
+    if (chatName.length > 30 || reelName.length > 30) {
+      throw new Error('Usernames cannot exceed 30 characters.');
+    }
+    if (chatName.toLowerCase() === reelName.toLowerCase()) {
+      throw new Error('Your Leela username must be different from your PMC chat username.');
     }
 
-    const data = { ...user.data, anonymousName: cleanName };
+    const [existingChatUser, existingLeelaUser] = await Promise.all([
+      this.client.pmcUser.findFirst({
+        where: {
+          anonymousName: chatName.toLowerCase(),
+          NOT: { id: userId }
+        }
+      }),
+      this.client.pmcUser.findFirst({
+        where: {
+          leelaUsername: reelName.toLowerCase(),
+          NOT: { id: userId }
+        }
+      })
+    ]);
+    if (existingChatUser) {
+      throw new Error('This PMC chat username is already taken. Please choose another.');
+    }
+    if (existingLeelaUser) {
+      throw new Error('This Leela username is already taken. Please choose another.');
+    }
+
+    const data = { ...user.data, anonymousName: chatName, leelaUsername: reelName };
     try {
       const updated = await this.client.pmcUser.update({
         where: { id: userId },
-        data: { anonymousName: cleanName.toLowerCase(), data }
+        data: {
+          anonymousName: chatName.toLowerCase(),
+          leelaUsername: reelName.toLowerCase(),
+          data
+        }
       });
       return updated.data;
     } catch (error) {
       if (isAnonymousNameUniqueError(error)) {
-        throw new Error('This anonymous persona name is already taken. Please choose another.');
+        throw new Error('This PMC chat username is already taken. Please choose another.');
       }
+      if (isLeelaUsernameUniqueError(error)) {
+        throw new Error('This Leela username is already taken. Please choose another.');
+      }
+      throw error;
+    }
+  }
+
+  async reportPmcChatUser(reporterId, reportedUserId, reason) {
+    try {
+      return await this.client.$transaction(async (transaction) => {
+        const [reporter, reportedUser] = await Promise.all([
+          transaction.pmcUser.findUnique({ where: { id: reporterId } }),
+          transaction.pmcUser.findUnique({ where: { id: reportedUserId } })
+        ]);
+        if (!reporter || !reportedUser) return null;
+        if (reporter.data.gender !== 'female') {
+          throw new Error('Only female students can report accounts from PMC chat.');
+        }
+        if (reporterId === reportedUserId) {
+          throw new Error('You cannot report your own account.');
+        }
+
+        const now = Date.now();
+        const existingBlock = Date.parse(reportedUser.data.pmcChatBlockedUntil || '');
+        const blockedUntil = new Date(
+          Math.max(now + 2 * 24 * 60 * 60 * 1000, Number.isFinite(existingBlock) ? existingBlock : 0)
+        );
+        await transaction.pmcUser.update({
+          where: { id: reportedUserId },
+          data: {
+            data: {
+              ...reportedUser.data,
+              pmcChatBlockedUntil: blockedUntil.toISOString()
+            }
+          }
+        });
+        await transaction.pmcChatReport.create({
+          data: {
+            id: `chat_report_${uuidv4()}`,
+            reporterId,
+            reportedUserId,
+            reason,
+            blockedUntil
+          }
+        });
+        return { blockedUntil: blockedUntil.toISOString() };
+      });
+    } catch (error) {
+      if (error.code === 'P2003' || error.code === 'P2025') return null;
       throw error;
     }
   }
@@ -379,6 +579,7 @@ class PrismaDB {
       const reel = await transaction.pmcReel.findUnique({ where: { id: reelId } });
       if (!reel) return null;
       await transaction.pmcReel.delete({ where: { id: reelId } });
+      await transaction.pmcAnnouncement.deleteMany({ where: { id: `reel_${reelId}` } });
       const deletedReelFiles = [];
       if (reel.data.videoUrl && reel.data.videoUrl.includes('/uploads/')) {
         const filename = reel.data.videoUrl.split('/uploads/').pop();

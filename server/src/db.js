@@ -6,6 +6,9 @@ const DATA_DIR = path.join(__dirname, '../data');
 const USERS_FILE = path.join(DATA_DIR, 'users.json');
 const REELS_FILE = path.join(DATA_DIR, 'reels.json');
 const REPORTS_FILE = path.join(DATA_DIR, 'reel-reports.json');
+const CHAT_REPORTS_FILE = path.join(DATA_DIR, 'chat-reports.json');
+const STUDENT_IDENTITIES_FILE = path.join(DATA_DIR, 'student-identities.json');
+const ACCOUNT_DELETION_REQUESTS_FILE = path.join(DATA_DIR, 'account-deletion-requests.json');
 const PUSH_TOKENS_FILE = path.join(DATA_DIR, 'push-tokens.json');
 const ANNOUNCEMENTS_FILE = path.join(DATA_DIR, 'announcements.json');
 const APP_RELEASES_FILE = path.join(DATA_DIR, 'app-releases.json');
@@ -40,10 +43,49 @@ class LocalDB {
     this.users = useLocalFiles ? readJson(USERS_FILE, []) : [];
     this.reels = useLocalFiles ? readJson(REELS_FILE, []) : [];
     this.reports = useLocalFiles ? readJson(REPORTS_FILE, []) : [];
+    this.chatReports = useLocalFiles ? readJson(CHAT_REPORTS_FILE, []) : [];
+    this.studentIdentities = useLocalFiles ? readJson(STUDENT_IDENTITIES_FILE, []) : [];
+    this.accountDeletionRequests = useLocalFiles ? readJson(ACCOUNT_DELETION_REQUESTS_FILE, []) : [];
     this.pushTokens = useLocalFiles ? readJson(PUSH_TOKENS_FILE, []) : [];
     this.announcements = useLocalFiles ? readJson(ANNOUNCEMENTS_FILE, []) : [];
     this.appReleases = useLocalFiles ? readJson(APP_RELEASES_FILE, []) : [];
-    // In-memory OTP storage: email -> { otp, studentData, expiresAt }
+    let usersChanged = false;
+    this.users.forEach(user => {
+      if (!user.leelaUsername) {
+        user.leelaUsername = `Leela_${String(user.id).slice(-8)}`;
+        usersChanged = true;
+      }
+    });
+    if (usersChanged) writeJson(USERS_FILE, this.users);
+    let identitiesChanged = false;
+    this.users.forEach(user => {
+      const email = user.email?.trim().toLowerCase();
+      if (!email || this.studentIdentities.some(identity => identity.email === email)) return;
+      this.studentIdentities.push({ email, gender: user.gender || 'male', createdAt: user.createdAt || new Date().toISOString() });
+      identitiesChanged = true;
+    });
+    if (identitiesChanged) writeJson(STUDENT_IDENTITIES_FILE, this.studentIdentities);
+    let reelsChanged = false;
+    const usersById = new Map(this.users.map(user => [user.id, user]));
+    const usersByChatName = new Map(
+      this.users.map(user => [user.anonymousName?.trim().toLowerCase(), user])
+    );
+    this.reels.forEach(reel => {
+      const creator = usersById.get(reel.creatorId);
+      if (creator && reel.creatorName !== creator.leelaUsername) {
+        reel.creatorName = creator.leelaUsername;
+        reelsChanged = true;
+      }
+      (reel.comments || []).forEach(comment => {
+        const commenter = usersByChatName.get(comment.user?.trim().toLowerCase());
+        if (commenter?.leelaUsername && comment.user !== commenter.leelaUsername) {
+          comment.user = commenter.leelaUsername;
+          reelsChanged = true;
+        }
+      });
+    });
+    if (reelsChanged) writeJson(REELS_FILE, this.reels);
+    // In-memory OTP storage: email -> { otp, expiresAt }
     this.otpStore = new Map();
     this.passwordResetOtpStore = new Map();
     this.passwordResetRequestStore = new Map();
@@ -122,13 +164,6 @@ class LocalDB {
     return this.users.find(u => u.email.toLowerCase() === email.trim().toLowerCase());
   }
 
-  findUserByPhone(phone) {
-    if (!phone) return null;
-    this.refreshUsers();
-    const cleanPhone = phone.trim().replace(/\D/g, '');
-    return this.users.find(u => (u.phone || '').replace(/\D/g, '') === cleanPhone);
-  }
-
   findUserByAnonymousName(anonymousName) {
     if (!anonymousName) return null;
     this.refreshUsers();
@@ -160,12 +195,11 @@ class LocalDB {
   /**
    * Save OTP for a student email with 10 minute expiry
    */
-  saveOtp(email, otp, studentData = {}) {
+  saveOtp(email, otp) {
     const cleanEmail = email.trim().toLowerCase();
     const expiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes
     this.otpStore.set(cleanEmail, {
       otp: otp.toString().trim(),
-      studentData,
       expiresAt
     });
   }
@@ -186,9 +220,8 @@ class LocalDB {
     if (record.otp !== otp.toString().trim()) {
       return { success: false, message: 'Invalid OTP code. Please enter the 6-digit code received in email.' };
     }
-    const studentData = record.studentData;
     // OTP verified successfully
-    return { success: true, studentData };
+    return { success: true };
   }
 
   clearOtp(email) {
@@ -255,7 +288,7 @@ class LocalDB {
     return user;
   }
 
-  registerVerifiedUser({ phone, email, password, gender, hostel, anonymousName, academicYear }) {
+  registerVerifiedUser({ email, password, gender, hostel, anonymousName, academicYear }) {
     const validation = this.validateManitEmail(email);
     if (!validation.valid) {
       throw new Error(validation.message);
@@ -263,6 +296,13 @@ class LocalDB {
 
     if (this.findUserByEmail(validation.email)) {
       throw new Error('This college email is already registered. Please login.');
+    }
+    if (gender !== 'male' && gender !== 'female') {
+      throw new Error('Choose a valid student gender.');
+    }
+    const identity = this.studentIdentities.find(item => item.email === validation.email);
+    if (identity && identity.gender !== gender) {
+      throw new Error(`This MANIT email is registered as ${identity.gender === 'female' ? 'a girl' : 'a boy'}. Re-registration must use the same gender.`);
     }
     const cleanAnonymousName = typeof anonymousName === 'string' ? anonymousName.trim() : '';
     if (!cleanAnonymousName) {
@@ -274,24 +314,123 @@ class LocalDB {
 
     const calculatedYear = academicYear || this.getAcademicYearFromScholarNo(validation.scholarNo);
 
+    const userId = `usr_${uuidv4().slice(0, 8)}`;
+    let registeredIdentity = null;
+    if (!identity) {
+      registeredIdentity = {
+        email: validation.email,
+        gender,
+        createdAt: new Date().toISOString()
+      };
+      this.studentIdentities.push(registeredIdentity);
+      if (!writeJson(STUDENT_IDENTITIES_FILE, this.studentIdentities)) {
+        this.studentIdentities.pop();
+        throw new Error('Could not save your verified student identity. Please try again.');
+      }
+    }
     const newUser = {
-      id: `usr_${uuidv4().slice(0, 8)}`,
+      id: userId,
       email: validation.email,
       scholarNo: validation.scholarNo,
-      phone: (phone || '').trim(),
       password: (password || '').trim(),
       gender: gender || 'male',
       academicYear: calculatedYear,
       hostel: hostel || 'Campus Hostel',
       anonymousName: cleanAnonymousName,
+      leelaUsername: `Leela_${userId.slice(-8)}`,
       isEmailVerified: true,
       createdAt: new Date().toISOString()
     };
 
     this.users.unshift(newUser);
-    writeJson(USERS_FILE, this.users);
+    if (!writeJson(USERS_FILE, this.users)) {
+      this.users.shift();
+      if (registeredIdentity) {
+        this.studentIdentities = this.studentIdentities.filter(item => item !== registeredIdentity);
+        if (!writeJson(STUDENT_IDENTITIES_FILE, this.studentIdentities)) {
+          console.error(`[LocalDB] Could not roll back the unregistered identity ${validation.email}.`);
+        }
+      }
+      throw new Error('Could not save your student account. Please try again.');
+    }
     this.clearOtp(validation.email);
     return newUser;
+  }
+
+  requestAccountDeletion(userId) {
+    const user = this.findUserById(userId);
+    if (!user) return null;
+    const pending = this.accountDeletionRequests.find(
+      request => request.userId === userId && request.status === 'pending'
+    );
+    if (pending) return pending;
+
+    const requestedAt = new Date();
+    const request = {
+      id: `deletion_${uuidv4()}`,
+      userId,
+      email: user.email,
+      displayName: user.anonymousName || 'Student',
+      gender: user.gender || 'male',
+      status: 'pending',
+      requestedAt: requestedAt.toISOString(),
+      deleteAfter: new Date(requestedAt.getTime() + 24 * 60 * 60 * 1000).toISOString(),
+      resolvedAt: null
+    };
+    this.accountDeletionRequests.unshift(request);
+    if (!writeJson(ACCOUNT_DELETION_REQUESTS_FILE, this.accountDeletionRequests)) {
+      this.accountDeletionRequests.shift();
+      throw new Error('Could not submit your account deletion request. Please try again.');
+    }
+    return request;
+  }
+
+  getAccountDeletionRequestForUser(userId) {
+    return this.accountDeletionRequests.find(
+      request => request.userId === userId && request.status === 'pending'
+    ) || null;
+  }
+
+  getAccountDeletionRequests({ status = 'pending' } = {}) {
+    return this.accountDeletionRequests
+      .filter(request => !status || request.status === status)
+      .sort((left, right) => new Date(left.requestedAt) - new Date(right.requestedAt));
+  }
+
+  getDueAccountDeletionRequests(now = new Date()) {
+    return this.accountDeletionRequests.filter(
+      request => request.status === 'pending' && Date.parse(request.deleteAfter) <= now.getTime()
+    );
+  }
+
+  rejectAccountDeletionRequest(requestId) {
+    const request = this.accountDeletionRequests.find(
+      item => item.id === requestId && item.status === 'pending'
+    );
+    if (!request) return null;
+    request.status = 'rejected';
+    request.resolvedAt = new Date().toISOString();
+    if (!writeJson(ACCOUNT_DELETION_REQUESTS_FILE, this.accountDeletionRequests)) {
+      request.status = 'pending';
+      request.resolvedAt = null;
+      throw new Error('Could not update the account deletion request. Please try again.');
+    }
+    return request;
+  }
+
+  completeAccountDeletionRequest(requestId, status = 'approved') {
+    const request = this.accountDeletionRequests.find(
+      item => item.id === requestId && item.status === 'pending'
+    );
+    if (!request) return null;
+    const deletion = this.deleteUser(request.userId);
+    if (!deletion) return null;
+    request.status = status;
+    request.resolvedAt = new Date().toISOString();
+    if (!writeJson(ACCOUNT_DELETION_REQUESTS_FILE, this.accountDeletionRequests)) {
+      console.error(`[LocalDB] Could not mark account deletion request ${requestId} as ${status}.`);
+    }
+    return { ...deletion, request };
   }
 
   registerUser(userData) {
@@ -313,22 +452,83 @@ class LocalDB {
     return user;
   }
 
-  updateUserPersona(userId, newAnonymousName) {
-    const cleanName = typeof newAnonymousName === 'string' ? newAnonymousName.trim() : '';
-    if (!cleanName) throw new Error('An anonymous persona name is required.');
+  updateUsernames(userId, { anonymousName, leelaUsername }) {
     this.refreshUsers();
     const user = this.users.find(u => u.id === userId);
     if (!user) return null;
-    const normalizedName = cleanName.toLowerCase();
-    const existingUser = this.users.find(
-      existing => existing.id !== userId && existing.anonymousName?.trim().toLowerCase() === normalizedName
-    );
-    if (existingUser && existingUser.id !== userId) {
-      throw new Error('This anonymous persona name is already taken. Please choose another.');
+    const chatName = typeof anonymousName === 'string' ? anonymousName.trim() : user.anonymousName;
+    const reelName = typeof leelaUsername === 'string' ? leelaUsername.trim() : user.leelaUsername;
+    if (!chatName || !reelName) {
+      throw new Error('Both PMC chat and Leela usernames are required.');
     }
-    user.anonymousName = cleanName;
-    writeJson(USERS_FILE, this.users);
+    if (chatName.length > 30 || reelName.length > 30) {
+      throw new Error('Usernames cannot exceed 30 characters.');
+    }
+    if (chatName.toLowerCase() === reelName.toLowerCase()) {
+      throw new Error('Your Leela username must be different from your PMC chat username.');
+    }
+    if (this.users.some(existing => existing.id !== userId &&
+      existing.anonymousName?.trim().toLowerCase() === chatName.toLowerCase())) {
+      throw new Error('This PMC chat username is already taken. Please choose another.');
+    }
+    if (this.users.some(existing => existing.id !== userId &&
+      existing.leelaUsername?.trim().toLowerCase() === reelName.toLowerCase())) {
+      throw new Error('This Leela username is already taken. Please choose another.');
+    }
+
+    const oldChatName = user.anonymousName;
+    const oldLeelaName = user.leelaUsername;
+    user.anonymousName = chatName;
+    user.leelaUsername = reelName;
+    if (!writeJson(USERS_FILE, this.users)) {
+      user.anonymousName = oldChatName;
+      user.leelaUsername = oldLeelaName;
+      throw new Error('Could not save your usernames. Please try again.');
+    }
     return user;
+  }
+
+  reportPmcChatUser(reporterId, reportedUserId, reason) {
+    const reporter = this.findUserById(reporterId);
+    const reportedUser = this.findUserById(reportedUserId);
+    if (!reporter || !reportedUser) return null;
+    if (reporter.gender !== 'female') {
+      throw new Error('Only female students can report accounts from PMC chat.');
+    }
+    if (reporterId === reportedUserId) {
+      throw new Error('You cannot report your own account.');
+    }
+
+    const now = Date.now();
+    const existingBlock = Date.parse(reportedUser.pmcChatBlockedUntil || '');
+    const blockedUntil = new Date(Math.max(now + 2 * 24 * 60 * 60 * 1000, Number.isFinite(existingBlock) ? existingBlock : 0));
+    const previousBlock = reportedUser.pmcChatBlockedUntil;
+    reportedUser.pmcChatBlockedUntil = blockedUntil.toISOString();
+    const report = {
+      id: `chat_report_${uuidv4()}`,
+      reporterId,
+      reportedUserId,
+      reason,
+      blockedUntil: blockedUntil.toISOString(),
+      createdAt: new Date(now).toISOString()
+    };
+    this.chatReports.unshift(report);
+    if (!writeJson(USERS_FILE, this.users)) {
+      if (previousBlock === undefined) delete reportedUser.pmcChatBlockedUntil;
+      else reportedUser.pmcChatBlockedUntil = previousBlock;
+      this.chatReports.shift();
+      throw new Error('Could not save this report. Please try again.');
+    }
+    if (!writeJson(CHAT_REPORTS_FILE, this.chatReports)) {
+      if (previousBlock === undefined) delete reportedUser.pmcChatBlockedUntil;
+      else reportedUser.pmcChatBlockedUntil = previousBlock;
+      this.chatReports.shift();
+      if (!writeJson(USERS_FILE, this.users)) {
+        console.error('[LocalDB] Could not roll back a failed PMC chat report.');
+      }
+      throw new Error('Could not save this report. Please try again.');
+    }
+    return { blockedUntil: blockedUntil.toISOString() };
   }
 
   updateUserAvatar(userId, avatarStorageKey) {
@@ -355,6 +555,10 @@ class LocalDB {
     writeJson(USERS_FILE, this.users);
     this.reports = this.reports.filter(report => report.reporterId !== userId);
     writeJson(REPORTS_FILE, this.reports);
+    this.chatReports = this.chatReports.filter(
+      report => report.reporterId !== userId && report.reportedUserId !== userId
+    );
+    writeJson(CHAT_REPORTS_FILE, this.chatReports);
     this.pushTokens = this.pushTokens.filter(item => item.userId !== userId);
     writeJson(PUSH_TOKENS_FILE, this.pushTokens);
 
@@ -395,6 +599,8 @@ class LocalDB {
     const olderReels = [];
 
     this.reels.forEach(reel => {
+      const creator = this.users.find(user => user.id === reel.creatorId);
+      if (creator?.leelaUsername) reel.creatorName = creator.leelaUsername;
       const likedBy = Array.isArray(reel.likedBy) ? reel.likedBy : [];
       reel.likesCount = likedBy.length;
       reel.isLiked = Boolean(userId && likedBy.includes(userId));
@@ -503,6 +709,8 @@ class LocalDB {
     writeJson(REELS_FILE, this.reels);
     this.reports = this.reports.filter(report => report.reelId !== reelId);
     writeJson(REPORTS_FILE, this.reports);
+    this.announcements = this.announcements.filter(item => item.id !== `reel_${reelId}`);
+    writeJson(ANNOUNCEMENTS_FILE, this.announcements);
     const deletedReelFiles = [];
     if (deletedReel.videoUrl && deletedReel.videoUrl.includes('/uploads/')) {
       const filename = deletedReel.videoUrl.split('/uploads/').pop();

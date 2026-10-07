@@ -28,7 +28,13 @@
   * Animated like button (heart) with live counter.
   * Slide-up campus comments drawer to drop gossip & banter.
   * **"Post to Leela" Editor:** Trim a selected clip and choose 9:16, square, or full-frame output before publishing with a caption.
+  * **Separate identities:** PMC chat and Leela have different usernames, editable from **Me**; reels and comments use the Leela username.
+  * **Your reels:** Open **Me → My uploaded reels** to review or delete reels you posted.
   * The server encodes and stores only the selected clip range; bundled FFmpeg is installed with the server dependencies.
+
+Female students can report an account from an active PMC chat. A reported account is blocked from PMC chat for 48 hours; Leela and other account features remain available.
+
+Students can request account deletion from **Me → Settings**. The account stays active while the request is pending; PMC admins can approve immediate deletion or reject it, and unresolved requests are automatically deleted after 24 hours. The verified email's original gender remains locked after deletion to prevent re-registration with a different gender.
 
 ### 3. 🛡️ MANIT Campus Pass & Student Verification
 * Restricted access using `@manit.ac.in` domain emails to keep the community safe, genuine, and exclusive to campus students while keeping all chats anonymous.
@@ -63,7 +69,21 @@ npx expo start
 
 > **Tip for Wi-Fi connection:** Expo Go automatically uses the computer address Expo CLI advertises to reach the local backend. Keep the phone and computer on the same Wi-Fi, start Expo in LAN mode, and allow Node.js through Windows Firewall on port `5000` if prompted. The local app intentionally ignores `EXPO_PUBLIC_API_URL` so local tests cannot accidentally write to production.
 
-For production builds, keep using the existing EAS `preview` profile, which pins `EXPO_PUBLIC_API_URL` to the production Render service. Release builds use that URL (or the production URL fallback), and their backend/deployment behavior is unchanged.
+For production builds, use the EAS `preview` profile and set `EXPO_PUBLIC_API_URL` in its EAS **preview** environment to the deployed HTTPS API URL. It is a public build-time setting, not a secret. If it is unset, the app retains the Render URL as a compatibility fallback.
+
+## Deploy the Backend on Oracle Cloud Free Tier
+
+The server can run on an Oracle Cloud Always Free eligible Ubuntu VM, with Nginx
+terminating HTTPS and proxying API and Socket.IO traffic. PostgreSQL remains on
+Supabase and uploaded media remains in Cloudflare R2, so the VM disk is not the
+source of truth for application data or media.
+
+Follow the complete VM, firewall, systemd, Nginx, HTTPS, and EAS setup in
+[`deploy/oracle-cloud/README.md`](./deploy/oracle-cloud/README.md). It includes
+the production environment variables and commands for updating the service.
+After the API is available at your HTTPS domain, set `EXPO_PUBLIC_API_URL` in the
+EAS **preview** environment before building the student APK. The build config
+also derives the Android reel App Link domain from that URL.
 
 ## Deploy the Backend on Render Free
 
@@ -98,7 +118,7 @@ The backend uses Prisma ORM and applies checked-in database migrations at each s
 
 The 100 MB limit applies to the selected source file uploaded to the server. The editor and server both restrict the published, trimmed segment to at most 40 seconds. The gallery picker may select a longer source, but only a maximum 40-second segment can be published; camera recording is limited to 40 seconds.
 
-After the service deploys, copy its HTTPS URL (for example, `https://pmc-leela-api.onrender.com`). Set the Expo public variable `EXPO_PUBLIC_API_URL` to that URL in the environment used to build the release APK (or in your Expo/EAS build environment):
+After the service deploys, copy its HTTPS URL (for example, `https://pmc-leela-api.onrender.com`). Set the Expo public variable `EXPO_PUBLIC_API_URL` to that URL in the EAS **preview** environment or the environment used to build the release APK:
 
 ```powershell
 $env:EXPO_PUBLIC_API_URL = "https://your-render-service.onrender.com"
@@ -111,11 +131,11 @@ cd mobile
 
 Reel shares use clickable HTTPS links such as `https://pmcleela.onrender.com/reel/<reel-id>`. The backend serves a reel preview and an **Open in PMC Leela** fallback. Android opens the reel directly when App Links are verified; the app also routes notification taps and reel notifications in **Me → Notifications** straight to Leela.
 
-The Android app is configured to claim `https://pmcleela.onrender.com/reel/...`. For automatic app opening, configure the Render environment variable `ANDROID_APP_SHA256_CERT_FINGERPRINTS` with the SHA-256 fingerprint of the Android signing certificate used for the distributed APK (comma-separated if more than one certificate is used). The backend publishes this as `/.well-known/assetlinks.json`. Obtain the signing certificate details from EAS Android credentials; the certificate must match the APK installed on users' phones. After configuring it, deploy the backend and build/install a new student APK so the Android App Link intent filter is present. If the service domain changes, update the app's Android intent filter and set `EXPO_PUBLIC_SHARE_URL` to the new HTTPS service URL when building.
+The Android app claims `/reel/...` links on the hostname in `EXPO_PUBLIC_SHARE_URL` (or `EXPO_PUBLIC_API_URL` if no share URL is set); the Render host is the fallback. For automatic app opening, configure the backend environment variable `ANDROID_APP_SHA256_CERT_FINGERPRINTS` with the SHA-256 fingerprint of the Android signing certificate used for the distributed APK (comma-separated if more than one certificate is used). The backend publishes this as `/.well-known/assetlinks.json`. Obtain the signing certificate details from EAS Android credentials; the certificate must match the APK installed on users' phones. After configuring it, deploy the backend and build/install a new student APK so the Android App Link intent filter is present.
 
 ## Build the private PMC Admin APK
 
-The separate Expo project in `pmc-admin/` builds an internal Android APK. Its credentials are checked by the Render backend; anyone who installs the APK still needs the admin email/password. The admin token remains in memory and is discarded when the app is closed. The admin can inspect all student details and reel comments, create or delete student accounts, review reports, and delete reels. Reel deletion first removes its Cloudflare R2 object; if storage removal fails, the reel record is kept so the deletion can be retried.
+The separate Expo project in `pmc-admin/` builds an internal Android APK. Its credentials are checked by the Render backend; anyone who installs the APK still needs the admin email/password. The admin token remains in memory and is discarded when the app is closed. The admin can inspect all student details and reel comments, create or delete student accounts, review reports, approve or reject account-deletion requests, and delete reels. Unresolved deletion requests are automatically processed after 24 hours. Reel deletion first removes its Cloudflare R2 object; if storage removal fails, the reel record is kept so the deletion can be retried.
 
 1. In Render, set `PMC_ADMIN_EMAIL`, a unique `PMC_ADMIN_PASSWORD` (at least 16 characters), and a random `PMC_ADMIN_SESSION_SECRET` (at least 32 characters). Keep all three as Render environment secrets. Redeploy the backend.
 2. In PowerShell, build the separate APK:
@@ -133,7 +153,7 @@ The `preview` EAS profile creates an internal APK and points it at the productio
 - Student development/release builds ask for notification permission after sign-in and register their Expo push token with the backend. On Android, configure Firebase Cloud Messaging before expecting background system notifications: create a Firebase project, register package `com.pmcleela.app`, add its `google-services.json` as `expo.android.googleServicesFile` in `mobile/app.json`, and upload a Firebase service-account JSON for FCM V1 to the EAS credentials for this app's existing EAS project. Keep service-account credentials private and out of source control. The EAS project owner must perform this setup; a different Expo account needs access to that project. After setting credentials, build and distribute a fresh APK. Existing installs must update and sign in again to register using the authenticated push endpoint. New reel uploads and broadcasts are saved to **Me → Notifications** and sent to registered devices. In that screen, the app shows whether the current device is registered and offers retry/settings actions. Devices that deny notifications cannot receive the system push, but saved items remain available in the app.
 - Android Expo Go does not support remote push notifications from SDK 53 onward. The app skips push-token registration in Expo Go to avoid its unsupported-API runtime error; the production APK and custom development builds retain push registration. Test actual phone push delivery with a development/release build, not Expo Go. Admin broadcast responses distinguish having zero registered devices from Expo accepting notification tickets; ticket acceptance alone does not prove that Android displayed a notification.
 - Students who forget their password can request a one-time code at their registered `@stu.manit.ac.in` address from **Log In → Forgot password?** The code expires after 10 minutes, is limited to five attempts, and can be requested once per minute. They use it to choose a new password; the existing password is never emailed. Password reset email uses the configured Brevo sender.
-- In PMC Admin, use **Broadcast** to send a title and message to registered devices. New reel alerts include the uploader's campus name and caption. The Admin app reports the number of accepted push tickets; this is not a guarantee that Android displayed each notification.
+- In PMC Admin, use **Broadcast** to send a title and message to registered devices. New reel alerts include the uploader's Leela username and caption. The Admin app reports the number of accepted push tickets; this is not a guarantee that Android displayed each notification.
 - For an app release, increment `expo.android.versionCode` in `mobile/app.json`, set the corresponding `expo.version`, and build the signed student APK. In PMC Admin, open **App update**, enter the exact version name and Android version code embedded in that APK, add release notes, select the APK, and publish. The APK is stored privately in R2; publishing automatically sends an update notification and makes an update card available in Me.
 - Build the student APK from the existing EAS project so it uses the existing signing credentials:
 

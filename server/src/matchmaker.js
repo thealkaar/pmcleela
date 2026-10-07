@@ -51,6 +51,48 @@ class Matchmaker {
     };
   }
 
+  updateUserAlias(userId, user) {
+    for (const socket of this.io.sockets.sockets.values()) {
+      if (socket.data?.userId !== userId) continue;
+
+      socket.data.studentUser = {
+        ...socket.data.studentUser,
+        anonymousName: user.anonymousName,
+        leelaUsername: user.leelaUsername,
+        academicYear: user.academicYear
+      };
+      for (const queuedUser of this.waitingQueue) {
+        if (this.getUserIdentity(queuedUser.socket) === userId) {
+          queuedUser.alias = user.anonymousName;
+        }
+      }
+      const session = this.userRooms.get(socket.id);
+      if (!session) continue;
+
+      session.yourAlias = user.anonymousName;
+      socket.emit('own_alias_updated', { alias: user.anonymousName });
+
+      const partnerSocket = this.io.sockets.sockets.get(session.partnerId);
+      const partnerSession = this.userRooms.get(session.partnerId);
+      if (partnerSession) partnerSession.partnerAlias = user.anonymousName;
+      if (partnerSocket?.connected) {
+        partnerSocket.emit('partner_alias_updated', {
+          alias: user.anonymousName,
+          academicYear: user.academicYear || 'Student'
+        });
+      }
+    }
+
+    for (const reservation of new Set(this.pendingMatches.values())) {
+      if (this.getUserIdentity(reservation.socket) === userId) {
+        reservation.userInfo.alias = user.anonymousName;
+      }
+      if (this.getUserIdentity(reservation.partnerSocket) === userId) {
+        reservation.partnerInfo.alias = user.anonymousName;
+      }
+    }
+  }
+
   getUserIdentity(socket) {
     return socket.data?.userId || socket.id;
   }
@@ -254,6 +296,7 @@ class Matchmaker {
       yourAcademicYear: user1.academicYear || 'Student',
       partnerAlias: alias2,
       partnerGender: user2.gender,
+      partnerUserId: user2.socket.data.userId,
       partnerAcademicYear: user2.academicYear || 'Student'
     });
 
@@ -264,6 +307,7 @@ class Matchmaker {
       yourAcademicYear: user2.academicYear || 'Student',
       partnerAlias: alias1,
       partnerGender: user1.gender,
+      partnerUserId: user1.socket.data.userId,
       partnerAcademicYear: user1.academicYear || 'Student'
     });
 
@@ -275,6 +319,7 @@ class Matchmaker {
       partnerAcademicYear: user2.academicYear || 'Student',
       yourGender: user1.gender,
       partnerGender: user2.gender,
+      partnerUserId: user2.socket.data.userId,
       partnerStatus: 'Online'
     });
 
@@ -286,6 +331,7 @@ class Matchmaker {
       partnerAcademicYear: user1.academicYear || 'Student',
       yourGender: user2.gender,
       partnerGender: user1.gender,
+      partnerUserId: user1.socket.data.userId,
       partnerStatus: 'Online'
     });
 
@@ -337,6 +383,23 @@ class Matchmaker {
     if (session) {
       socket.to(session.roomId).emit('partner_typing', { isTyping });
     }
+  }
+
+  getPartnerUserId(socket) {
+    return this.userRooms.get(socket.id)?.partnerUserId || null;
+  }
+
+  blockChatAccess(userId, blockedUntil) {
+    for (const socket of this.io.sockets.sockets.values()) {
+      if (socket.data.userId !== userId) continue;
+      socket.data.chatBlockedUntil = blockedUntil;
+      this.leaveRoom(socket);
+      socket.emit('chat_access_blocked', {
+        message: 'You have been blocked for two days because a girl reported you.',
+        blockedUntil
+      });
+    }
+    this.io.emit('online_stats', this.getOnlineStats());
   }
 
   next(socket, userInfo = {}) {
