@@ -20,7 +20,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import { File } from 'expo-file-system';
 import { VideoView, useVideoPlayer } from 'expo-video';
 
-const API_URL = (process.env.EXPO_PUBLIC_API_URL || 'https://pmcleela.onrender.com').replace(/\/+$/, '');
+const API_URL = (process.env.EXPO_PUBLIC_API_URL || 'https://pmcleela-api.me').replace(/\/+$/, '');
 const REPORT_FILTERS = ['pending', 'resolved', 'dismissed'];
 const APP_LOGO = require('./assets/app-logo.png');
 

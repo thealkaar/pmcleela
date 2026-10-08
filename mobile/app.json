@@ -22,7 +22,7 @@
           "data": [
             {
               "scheme": "https",
-              "host": "pmcleela.onrender.com",
+              "host": "pmcleela-api.me",
               "pathPrefix": "/reel"
             }
           ],

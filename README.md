@@ -129,9 +129,9 @@ cd mobile
 
 ### Reel sharing and Android App Links
 
-Reel shares use clickable HTTPS links such as `https://pmcleela.onrender.com/reel/<reel-id>`. The backend serves a reel preview and an **Open in PMC Leela** fallback. Android opens the reel directly when App Links are verified; the app also routes notification taps and reel notifications in **Me → Notifications** straight to Leela.
+Reel shares use clickable HTTPS links such as `https://pmcleela-api.me/reel/<reel-id>`. The backend serves a reel preview and an **Open in PMC Leela** fallback. Android opens the reel directly when App Links are verified; the app also routes notification taps and reel notifications in **Me → Notifications** straight to Leela.
 
-The Android app claims `/reel/...` links on the hostname in `EXPO_PUBLIC_SHARE_URL` (or `EXPO_PUBLIC_API_URL` if no share URL is set); the Render host is the fallback. For automatic app opening, configure the backend environment variable `ANDROID_APP_SHA256_CERT_FINGERPRINTS` with the SHA-256 fingerprint of the Android signing certificate used for the distributed APK (comma-separated if more than one certificate is used). The backend publishes this as `/.well-known/assetlinks.json`. Obtain the signing certificate details from EAS Android credentials; the certificate must match the APK installed on users' phones. After configuring it, deploy the backend and build/install a new student APK so the Android App Link intent filter is present.
+The Android app claims `/reel/...` links on the hostname in `EXPO_PUBLIC_SHARE_URL` (or `EXPO_PUBLIC_API_URL` if no share URL is set); `https://pmcleela-api.me` is the fallback. For automatic app opening, configure the backend environment variable `ANDROID_APP_SHA256_CERT_FINGERPRINTS` with the SHA-256 fingerprint of the Android signing certificate used for the distributed APK (comma-separated if more than one certificate is used). The backend publishes this as `/.well-known/assetlinks.json`. Obtain the signing certificate details from EAS Android credentials; the certificate must match the APK installed on users' phones. After configuring it, deploy the backend and build/install a new student APK so the Android App Link intent filter is present.
 
 ## Build the private PMC Admin APK
 

@@ -1,4 +1,4 @@
-const DEFAULT_API_URL = 'https://pmcleela.onrender.com';
+const DEFAULT_API_URL = 'https://pmcleela-api.me';
 
 module.exports = ({ config }) => {
   const shareUrl = (

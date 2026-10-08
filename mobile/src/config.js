@@ -11,7 +11,7 @@ const configuredApiUrl = process.env.EXPO_PUBLIC_API_URL
   ? process.env.EXPO_PUBLIC_API_URL.trim().replace(/\/+$/, '')
   : '';
 const isDevelopment = typeof __DEV__ !== 'undefined' && __DEV__;
-const PRODUCTION_API_URL = 'https://pmcleela.onrender.com';
+const PRODUCTION_API_URL = 'https://pmcleela-api.me';
 
 export const REEL_SHARE_BASE_URL = (
   process.env.EXPO_PUBLIC_SHARE_URL || (!isDevelopment && configuredApiUrl) || PRODUCTION_API_URL

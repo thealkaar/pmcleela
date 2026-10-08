@@ -7,6 +7,10 @@
     "preview": {
       "distribution": "internal",
       "environment": "preview",
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://pmcleela-api.me",
+        "EXPO_PUBLIC_SHARE_URL": "https://pmcleela-api.me"
+      },
       "android": {
         "buildType": "apk"
       }
