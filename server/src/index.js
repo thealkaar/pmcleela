@@ -257,6 +257,11 @@ if (!Number.isFinite(configuredUploadLimitMb) || configuredUploadLimitMb <= 0) {
   throw new Error('MAX_UPLOAD_MB must be a positive number.');
 }
 const maxUploadBytes = configuredUploadLimitMb * 1024 * 1024;
+const configuredReelSourceLimitMb = Number(process.env.MAX_REEL_SOURCE_UPLOAD_MB || 1024);
+if (!Number.isFinite(configuredReelSourceLimitMb) || configuredReelSourceLimitMb < configuredUploadLimitMb) {
+  throw new Error('MAX_REEL_SOURCE_UPLOAD_MB must be at least MAX_UPLOAD_MB.');
+}
+const maxReelSourceBytes = configuredReelSourceLimitMb * 1024 * 1024;
 
 // Multer storage for local reels videos.
 const storage = multer.diskStorage({
@@ -269,10 +274,43 @@ const storage = multer.diskStorage({
 const upload = multer({
   storage,
   limits: {
-    fileSize: maxUploadBytes,
+    fileSize: maxReelSourceBytes,
     fieldSize: 1024 * 1024
   }
 });
+const MAX_REEL_AUDIO_UPLOAD_BYTES = 25 * 1024 * 1024;
+const STAGED_REEL_AUDIO_TTL_MS = 30 * 60 * 1000;
+const stagedReelAudio = new Map();
+const reelAudioUpload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => cb(null, uploadsDir),
+    filename: (req, file, cb) => {
+      const extension = path.extname(file.originalname).toLowerCase();
+      cb(null, `leela_audio_${randomUUID()}${extension}`);
+    }
+  }),
+  limits: { fileSize: MAX_REEL_AUDIO_UPLOAD_BYTES, files: 1 },
+  fileFilter: (req, file, cb) => {
+    const extension = path.extname(file.originalname).toLowerCase();
+    const allowedExtensions = new Set(['.mp3', '.m4a', '.aac', '.wav', '.ogg', '.opus', '.flac']);
+    const validType = file.mimetype.startsWith('audio/') || file.mimetype === 'application/octet-stream';
+    const valid = allowedExtensions.has(extension) && validType;
+    cb(valid ? null : new Error('Choose an MP3, M4A, AAC, WAV, OGG, OPUS, or FLAC audio file.'), valid);
+  }
+});
+const reelAudioCleanupTimer = setInterval(() => {
+  const now = Date.now();
+  for (const [audioId, entry] of stagedReelAudio) {
+    if (entry.expiresAt > now) continue;
+    stagedReelAudio.delete(audioId);
+    fs.promises.unlink(entry.path).catch((error) => {
+      if (error.code !== 'ENOENT') {
+        console.error('[Reels] Could not remove expired staged music:', error);
+      }
+    });
+  }
+}, 5 * 60 * 1000);
+reelAudioCleanupTimer.unref();
 const appReleaseUploadLimitMb = Number(process.env.MAX_APP_RELEASE_MB || 250);
 if (!Number.isFinite(appReleaseUploadLimitMb) || appReleaseUploadLimitMb <= 0) {
   throw new Error('MAX_APP_RELEASE_MB must be a positive number.');
@@ -686,6 +724,22 @@ app.post('/api/admin/announcements', requireAdmin, async (req, res) => {
   } catch (error) {
     console.error('[Admin] Failed to send announcement:', error);
     res.status(500).json({ success: false, message: 'Could not publish the broadcast.' });
+  }
+});
+
+app.delete('/api/admin/announcements/:id', requireAdmin, async (req, res) => {
+  const announcementId = req.params.id;
+  if (!announcementId.startsWith('announcement_')) {
+    return res.status(400).json({ success: false, message: 'Only admin broadcasts can be deleted here.' });
+  }
+
+  try {
+    const deleted = await db.deleteAnnouncement(announcementId);
+    if (!deleted) return res.status(404).json({ success: false, message: 'Broadcast not found.' });
+    res.json({ success: true });
+  } catch (error) {
+    console.error(`[Admin] Failed to delete broadcast ${announcementId}:`, error);
+    res.status(500).json({ success: false, message: 'Could not delete this broadcast.' });
   }
 });
 
@@ -1289,6 +1343,48 @@ app.get('/api/reels/mine', requireStudent, async (req, res) => {
 });
 
 // 8. UPLOAD REEL TO CONFIGURED STORAGE
+app.post('/api/reels/audio-upload', requireStudent, (req, res) => {
+  reelAudioUpload.single('audio')(req, res, (err) => {
+    if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
+      return res.status(413).json({
+        success: false,
+        message: 'Music file exceeds the 25MB limit. Choose a smaller audio file.'
+      });
+    }
+    if (err) {
+      return res.status(400).json({ success: false, message: err.message || 'Could not upload music.' });
+    }
+    if (!req.file) {
+      return res.status(400).json({ success: false, message: 'Choose an audio file to use in your reel.' });
+    }
+
+    const audioUploadId = randomUUID();
+    stagedReelAudio.set(audioUploadId, {
+      path: req.file.path,
+      creatorId: req.studentUser.id,
+      expiresAt: Date.now() + STAGED_REEL_AUDIO_TTL_MS
+    });
+    res.status(201).json({ success: true, audioUploadId });
+  });
+});
+
+app.delete('/api/reels/audio-upload/:audioUploadId', requireStudent, async (req, res) => {
+  const entry = stagedReelAudio.get(req.params.audioUploadId);
+  if (!entry || entry.creatorId !== req.studentUser.id) {
+    return res.status(404).json({ success: false, message: 'Staged music was not found.' });
+  }
+
+  stagedReelAudio.delete(req.params.audioUploadId);
+  try {
+    await fs.promises.unlink(entry.path);
+    return res.json({ success: true });
+  } catch (error) {
+    if (error.code === 'ENOENT') return res.json({ success: true });
+    console.error('[Reels] Could not remove staged music:', error);
+    return res.status(500).json({ success: false, message: 'Could not remove staged music.' });
+  }
+});
+
 app.post('/api/reels/upload', requireStudent, (req, res) => {
   if (process.env.NODE_ENV === 'production' && !r2Storage.isConfigured()) {
     console.error(
@@ -1305,19 +1401,30 @@ app.post('/api/reels/upload', requireStudent, (req, res) => {
       if (err.code === 'LIMIT_FILE_SIZE') {
         return res.status(413).json({
           success: false,
-          message: `Video file exceeds the ${configuredUploadLimitMb}MB limit. Please trim or select a shorter clip.`
+          message: `Original video exceeds the ${configuredReelSourceLimitMb}MB source limit. Choose a smaller source video.`
         });
       }
-      return res.status(400).json({ success: false, message: `Upload error: ${err.message}` });
+      return res.status(400).json({ success: false, message: 'Could not receive the selected video. Please try again.' });
     } else if (err) {
-      return res.status(500).json({ success: false, message: `Upload error: ${err.message}` });
+      console.error('[Reels] Could not receive uploaded video:', err);
+      return res.status(500).json({ success: false, message: 'Could not receive the selected video. Please try again.' });
     }
 
     let uploadedPath = req.file?.path;
+    let soundtrackPath = null;
     let uploadedStorageKey = null;
     let uploadContentType = req.file?.mimetype || 'video/mp4';
     try {
-      const { caption, audioTitle, tags, trimStart, trimEnd, cropMode } = req.body;
+      const {
+        caption,
+        audioTitle,
+        tags,
+        trimStart,
+        trimEnd,
+        cropMode,
+        audioUploadId,
+        muteOriginalAudio
+      } = req.body;
       const creatorId = req.studentUser.id;
       const creatorName = req.studentUser.leelaUsername || `Leela_${String(req.studentUser.id).slice(-8)}`;
       const creatorYear = req.studentUser.academicYear;
@@ -1327,6 +1434,21 @@ app.post('/api/reels/upload', requireStudent, (req, res) => {
         const error = new Error('A video file is required.');
         error.statusCode = 400;
         throw error;
+      }
+
+      if (audioUploadId) {
+        const stagedAudio = stagedReelAudio.get(audioUploadId);
+        if (
+          !stagedAudio ||
+          stagedAudio.creatorId !== req.studentUser.id ||
+          stagedAudio.expiresAt <= Date.now()
+        ) {
+          const error = new Error('The selected music upload expired. Please select the music again.');
+          error.statusCode = 400;
+          throw error;
+        }
+        stagedReelAudio.delete(audioUploadId);
+        soundtrackPath = stagedAudio.path;
       }
 
       const hasTrimStart = trimStart !== undefined && trimStart !== '';
@@ -1346,8 +1468,14 @@ app.post('/api/reels/upload', requireStudent, (req, res) => {
         const processedVideo = await trimAndCropVideo(uploadedPath, {
           trimStart,
           trimEnd,
-          cropMode: cropMode || '9:16'
+          cropMode: cropMode || '9:16',
+          audioPath: soundtrackPath,
+          muteOriginalAudio: muteOriginalAudio === 'true'
         });
+        if (soundtrackPath) {
+          await fs.promises.unlink(soundtrackPath);
+          soundtrackPath = null;
+        }
         uploadContentType = 'video/mp4';
         await fs.promises.unlink(uploadedPath).catch((cleanupError) => {
           if (cleanupError.code !== 'ENOENT') {
@@ -1358,6 +1486,12 @@ app.post('/api/reels/upload', requireStudent, (req, res) => {
       }
 
       if (uploadedPath) {
+        const processedStat = await fs.promises.stat(uploadedPath);
+        if (processedStat.size > maxUploadBytes) {
+          const error = new Error(`Processed reel exceeds the ${configuredUploadLimitMb}MB upload limit.`);
+          error.statusCode = 413;
+          throw error;
+        }
         if (r2Storage.isConfigured()) {
           uploadedStorageKey = await r2Storage.uploadVideo(uploadedPath, uploadContentType);
           await fs.promises.unlink(uploadedPath);
@@ -1384,6 +1518,7 @@ app.post('/api/reels/upload', requireStudent, (req, res) => {
         videoUrl,
         videoStorageKey: uploadedStorageKey,
         audioTitle: audioTitle || 'Original Audio',
+        muteOriginalAudio: muteOriginalAudio === 'true',
         tags: typeof tags === 'string' ? tags.split(',').map(t => t.trim()) : (tags || ['#PMC', '#MANIT', '#Leela']),
         trimStart: trimStart || 0,
         trimEnd: trimEnd || 0,
@@ -1439,7 +1574,22 @@ app.post('/api/reels/upload', requireStudent, (req, res) => {
           }
         });
       }
-      res.status(saveErr.statusCode || 500).json({ success: false, message: saveErr.message });
+      if (soundtrackPath) {
+        await fs.promises.unlink(soundtrackPath).catch((cleanupError) => {
+          if (cleanupError.code !== 'ENOENT') {
+            console.error('Could not remove failed staged reel music:', cleanupError);
+          }
+        });
+      }
+      const statusCode = saveErr.statusCode || 500;
+      const message = statusCode === 413
+        ? `Your trimmed reel exceeds the ${configuredUploadLimitMb}MB limit. Choose a shorter or lower-resolution clip.`
+        : statusCode === 422
+          ? 'The selected video or music could not be processed. Try another file and publish again.'
+          : statusCode === 400
+            ? saveErr.message
+            : 'Could not publish your reel. Check your connection and try again.';
+      res.status(statusCode).json({ success: false, message });
     }
   });
 });

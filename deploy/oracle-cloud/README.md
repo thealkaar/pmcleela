@@ -71,6 +71,7 @@ sudoedit /etc/pmcleela/server.env
 NODE_ENV=production
 PORT=5000
 MAX_UPLOAD_MB=100
+MAX_REEL_SOURCE_UPLOAD_MB=1024
 MAX_APP_RELEASE_MB=250
 JSON_BODY_LIMIT=10mb
 DATABASE_URL=
@@ -120,6 +121,11 @@ sudo ln -s /etc/nginx/sites-available/pmcleela /etc/nginx/sites-enabled/pmcleela
 sudo nginx -t
 sudo systemctl reload nginx
 ```
+
+The Nginx upload limit and timeouts are sized for the default 1 GB reel source
+limit and server-side trim/mix processing. If `MAX_REEL_SOURCE_UPLOAD_MB` is
+changed, raise `client_max_body_size` above that value and keep the proxy
+timeouts long enough for video processing.
 
 Install a Let's Encrypt certificate after the DNS record resolves to the VM:
 

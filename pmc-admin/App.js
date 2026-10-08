@@ -243,6 +243,30 @@ export default function App() {
     }
   };
 
+  const deleteBroadcast = (broadcast) => {
+    Alert.alert(
+      'Delete notification permanently?',
+      'This removes the broadcast from the in-app notifications list for everyone. A push alert already delivered to a device cannot be recalled.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete permanently',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await request(`/api/admin/announcements/${encodeURIComponent(broadcast.id)}`, token, {
+                method: 'DELETE'
+              });
+              setBroadcasts(previous => previous.filter(item => item.id !== broadcast.id));
+            } catch (error) {
+              Alert.alert('Could not delete notification', error.message);
+            }
+          }
+        }
+      ]
+    );
+  };
+
   const chooseApk = async () => {
     try {
       const result = await DocumentPicker.getDocumentAsync({
@@ -523,7 +547,19 @@ export default function App() {
   const renderBroadcast = ({ item }) => (
     <View style={styles.card}>
       <View style={styles.broadcastHistoryCard}>
-        <Text style={styles.cardTitle}>{item.title}</Text>
+        <View style={styles.broadcastHistoryHeading}>
+          <Text style={[styles.cardTitle, styles.broadcastHistoryTitle]}>{item.title}</Text>
+          {String(item.id).startsWith('announcement_') && (
+            <TouchableOpacity
+              style={styles.dangerIconButton}
+              onPress={() => deleteBroadcast(item)}
+              accessibilityRole="button"
+              accessibilityLabel={`Permanently delete notification ${item.title}`}
+            >
+              <Ionicons name="trash-outline" size={16} color="#fda4af" />
+            </TouchableOpacity>
+          )}
+        </View>
         <Text style={styles.announcementMessage}>{item.message}</Text>
         <Text style={styles.mutedText}>{formatDate(item.createdAt)}</Text>
       </View>
@@ -780,6 +816,7 @@ export default function App() {
       {loadError ? <Text style={styles.errorText}>{loadError}</Text> : null}
       {loading ? <ActivityIndicator style={styles.loader} size="large" color="#ec4899" /> : (
         <FlatList
+          style={styles.mainList}
           data={data}
           keyExtractor={item => item.id}
           renderItem={
@@ -922,7 +959,10 @@ const styles = StyleSheet.create({
   errorText: { color: '#fda4af', fontSize: 12, lineHeight: 17, marginTop: 12 },
   topBar: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: 20, paddingTop: Platform.OS === 'android' ? 18 : 52, paddingBottom: 16
+    paddingHorizontal: 20,
+    paddingTop: Platform.OS === 'android' ? Math.max(18, StatusBar.currentHeight || 0) : 52,
+    paddingBottom: 16,
+    flexShrink: 0
   },
   screenTitle: { color: '#f8fafc', fontSize: 22, fontWeight: '700', marginTop: 4 },
   logoutButton: {
@@ -930,7 +970,7 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: '#252b39', alignItems: 'center', justifyContent: 'center'
   },
   tabBar: {
-    flexGrow: 0, marginHorizontal: 16, borderRadius: 14,
+    flexGrow: 0, flexShrink: 0, marginHorizontal: 16, borderRadius: 14,
     backgroundColor: '#121622', borderWidth: 1, borderColor: '#252b39'
   },
   tabBarContent: {
@@ -946,7 +986,7 @@ const styles = StyleSheet.create({
   tabButtonTextActive: { color: '#f9a8d4' },
   contentHeader: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: 20, paddingTop: 22, paddingBottom: 10
+    paddingHorizontal: 20, paddingTop: 22, paddingBottom: 10, flexShrink: 0
   },
   sectionTitle: { color: '#edf0f7', fontSize: 17, fontWeight: '700' },
   mutedText: { color: '#8992a7', fontSize: 11, marginTop: 4 },
@@ -967,6 +1007,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#db2777', borderRadius: 12, paddingVertical: 12, marginHorizontal: 20, marginTop: 6
   },
   loader: { marginTop: 50 },
+  mainList: { flex: 1, minHeight: 0 },
   listContent: { paddingHorizontal: 16, paddingTop: 8, paddingBottom: 28, flexGrow: 1 },
   card: {
     backgroundColor: '#11151f', borderRadius: 17, borderWidth: 1, borderColor: '#252b39',
@@ -999,6 +1040,8 @@ const styles = StyleSheet.create({
   messageInput: { minHeight: 88, textAlignVertical: 'top', paddingTop: 12 },
   announcementMessage: { color: '#c1c5d0', fontSize: 12, lineHeight: 18, marginTop: 8 },
   broadcastHistoryCard: { padding: 15 },
+  broadcastHistoryHeading: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  broadcastHistoryTitle: { flex: 1 },
   releaseHistoryCard: { paddingBottom: 14 },
   releaseAvatar: { backgroundColor: 'rgba(236,72,153,0.12)' },
   currentReleaseBadge: {

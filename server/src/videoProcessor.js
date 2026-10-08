@@ -36,7 +36,38 @@ function runFFmpeg(args) {
   });
 }
 
-async function trimAndCropVideo(inputPath, { trimStart, trimEnd, cropMode = '9:16' }) {
+function hasAudioTrack(inputPath) {
+  return new Promise((resolve, reject) => {
+    const process = spawn(ffmpegPath, [
+      '-hide_banner',
+      '-i', inputPath,
+      '-map', '0:a:0',
+      '-frames:a', '1',
+      '-f', 'null',
+      '-'
+    ], {
+      windowsHide: true,
+      stdio: ['ignore', 'ignore', 'pipe']
+    });
+    let diagnostic = '';
+
+    process.stderr.on('data', (chunk) => {
+      if (diagnostic.length < 16000) {
+        diagnostic += chunk.toString().slice(0, 16000 - diagnostic.length);
+      }
+    });
+    process.once('error', reject);
+    process.once('close', () => resolve(/Stream #\d+:\d+.*Audio:/i.test(diagnostic)));
+  });
+}
+
+async function trimAndCropVideo(inputPath, {
+  trimStart,
+  trimEnd,
+  cropMode = '9:16',
+  audioPath = null,
+  muteOriginalAudio = false
+}) {
   if (!ffmpegPath) {
     throw new Error('FFmpeg is unavailable. Reinstall the server dependencies before uploading reels.');
   }
@@ -66,16 +97,37 @@ async function trimAndCropVideo(inputPath, { trimStart, trimEnd, cropMode = '9:1
   const temporaryPath = `${outputPath}.processing.mp4`;
 
   try {
-    await runFFmpeg([
+    const args = [
       '-hide_banner',
       '-loglevel', 'error',
       '-y',
-      '-filter_threads', '1',
-      '-i', inputPath,
-      '-ss', String(start),
+      '-filter_threads', '1'
+    ];
+    if (audioPath) {
+      args.push('-ss', String(start), '-i', inputPath, '-stream_loop', '-1', '-i', audioPath);
+    } else {
+      args.push('-i', inputPath);
+    }
+    args.push(
       '-t', String(end - start),
-      '-map', '0:v:0',
-      '-map', '0:a?',
+      '-map', '0:v:0'
+    );
+    if (audioPath) {
+      if (!muteOriginalAudio && await hasAudioTrack(inputPath)) {
+        args.push(
+          '-filter_complex',
+          '[0:a:0]volume=0.25[original];[1:a:0]volume=2.0[music];[original][music]amix=inputs=2:duration=first:dropout_transition=2:normalize=0,alimiter=limit=0.95[mixed]',
+          '-map', '[mixed]'
+        );
+      } else {
+        args.push('-map', '1:a:0', '-af', 'volume=2.0,alimiter=limit=0.95');
+      }
+    } else if (muteOriginalAudio) {
+      args.push('-an');
+    } else {
+      args.push('-map', '0:a?');
+    }
+    args.push(
       '-vf', filter,
       '-c:v', 'libx264',
       '-threads', '2',
@@ -86,7 +138,8 @@ async function trimAndCropVideo(inputPath, { trimStart, trimEnd, cropMode = '9:1
       '-b:a', '128k',
       '-movflags', '+faststart',
       temporaryPath
-    ]);
+    );
+    await runFFmpeg(args);
 
     const outputStat = await fs.promises.stat(temporaryPath);
     if (!outputStat.size) {

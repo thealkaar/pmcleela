@@ -28,6 +28,7 @@ export default function VideoSlideTrimmer({
   videoUri,
   duration = 30, // in seconds
   maxDuration = 40,
+  playbackTime = 0,
   trimStart,
   trimEnd,
   onTrimChange,
@@ -108,11 +109,12 @@ export default function VideoSlideTrimmer({
         const { totalDuration: dur, containerWidth: w, trimEnd: endVal } = trimRef.current;
         const gestureWidth = Math.max(1, w - (HANDLE_WIDTH * 2));
         const deltaSec = (gestureState.dx / gestureWidth) * dur;
-        let newStart = leftPanResponder.startX + deltaSec;
         const minClipDuration = Math.min(1.5, dur);
-        
-        newStart = Math.max(0, Math.min(newStart, endVal - minClipDuration, endVal - maxDuration));
-        newStart = Math.round(newStart * 10) / 10;
+        const minStart = Math.max(0, endVal - maxDuration);
+        const maxStart = Math.max(minStart, endVal - minClipDuration);
+        const newStart = Math.round(
+          Math.max(minStart, Math.min(leftPanResponder.startX + deltaSec, maxStart)) * 10
+        ) / 10;
 
         if (onTrimChange) {
           onTrimChange(newStart, endVal);
@@ -166,6 +168,9 @@ export default function VideoSlideTrimmer({
   ).current;
 
   const currentDurationSec = Math.max(1, Math.round((trimEnd - trimStart) * 10) / 10);
+  const playbackProgress = trimEnd > trimStart
+    ? Math.max(0, Math.min(1, (playbackTime - trimStart) / (trimEnd - trimStart)))
+    : 0;
   const formatTime = (secs) => {
     const s = Math.floor(secs);
     const m = Math.floor(s / 60);
@@ -237,7 +242,9 @@ export default function VideoSlideTrimmer({
             }
           ]}
           pointerEvents="none"
-        />
+        >
+          <View style={[styles.playbackIndicator, { left: `${playbackProgress * 100}%` }]} />
+        </View>
 
         {/* LEFT TRIM HANDLE (WhatsApp Style with Grip Notch) */}
         <View
@@ -268,6 +275,8 @@ export default function VideoSlideTrimmer({
           style={styles.muteButtonPill}
           onPress={onToggleMute}
           activeOpacity={0.8}
+          accessibilityRole="button"
+          accessibilityLabel={isMuted ? 'Unmute original video audio' : 'Mute original video audio'}
         >
           <Ionicons
             name={isMuted ? 'volume-mute' : 'volume-high'}
@@ -339,6 +348,18 @@ const styles = StyleSheet.create({
     borderTopWidth: 2.5,
     borderBottomWidth: 2.5,
     borderColor: '#ffffff'
+  },
+  playbackIndicator: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    width: 2,
+    backgroundColor: '#f472b6',
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.9,
+    shadowRadius: 2,
+    elevation: 5
   },
   handleTouchable: {
     position: 'absolute',

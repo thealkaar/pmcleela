@@ -798,6 +798,17 @@ class LocalDB {
     return limit == null ? this.announcements : this.announcements.slice(0, limit);
   }
 
+  deleteAnnouncement(id) {
+    const index = this.announcements.findIndex(item => item.id === id);
+    if (index < 0) return false;
+    const [announcement] = this.announcements.splice(index, 1);
+    if (!writeJson(ANNOUNCEMENTS_FILE, this.announcements)) {
+      this.announcements.splice(index, 0, announcement);
+      throw new Error('Could not persist the deleted broadcast.');
+    }
+    return true;
+  }
+
   addAppRelease(release) {
     if (this.appReleases.some(item => item.versionCode === release.versionCode)) {
       const error = new Error('This Android version code has already been published.');

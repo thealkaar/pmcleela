@@ -251,16 +251,20 @@ export default function MeProfileScreen({
   const dismissedForCurrentUser = dismissedNotifications.userId === notificationUserId
     ? dismissedNotifications
     : { announcementIds: [], releaseCodes: [] };
-  const visibleAnnouncements = announcements.filter(
-    item => !dismissedForCurrentUser.announcementIds.includes(String(item.id))
-  );
+  const visibleAnnouncements = isLoadingDismissedNotifications
+    ? []
+    : announcements.filter(
+      item => !dismissedForCurrentUser.announcementIds.includes(String(item.id))
+    );
   const releaseCode = appRelease ? String(appRelease.versionCode) : null;
   const hasAppUpdate = Boolean(
     hasAppUpdateAvailable &&
     releaseCode &&
     !dismissedForCurrentUser.releaseCodes.includes(releaseCode)
   );
-  const notificationCount = visibleAnnouncements.length + Number(hasAppUpdate);
+  const notificationCount = isLoadingDismissedNotifications
+    ? 0
+    : visibleAnnouncements.length + Number(hasAppUpdate);
 
   const clearNotifications = async () => {
     if (!notificationStorageKey || !notificationUserId || isLoadingDismissedNotifications) {

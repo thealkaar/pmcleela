@@ -33,7 +33,9 @@ class ReelUploadService : Service() {
     val uploadUrl = intent?.getStringExtra(EXTRA_URL)
     val fileUri = intent?.getStringExtra(EXTRA_FILE_URI)
     val fieldsJson = intent?.getStringExtra(EXTRA_FIELDS)
-    if (uploadId.isNullOrBlank() || uploadUrl.isNullOrBlank() || fileUri.isNullOrBlank() || fieldsJson.isNullOrBlank()) {
+    val headersJson = intent?.getStringExtra(EXTRA_HEADERS)
+    if (uploadId.isNullOrBlank() || uploadUrl.isNullOrBlank() || fileUri.isNullOrBlank() ||
+      fieldsJson.isNullOrBlank() || headersJson.isNullOrBlank()) {
       getSharedPreferences(PREFERENCES, 0).edit()
         .putString("status", "failed")
         .putString("error", "The upload request was incomplete.")
@@ -57,13 +59,19 @@ class ReelUploadService : Service() {
     ensureNotificationChannel()
     startForegroundCompat(buildNotification(0, "Preparing your reel"))
     executor.execute {
-      performUpload(uploadId, uploadUrl, Uri.parse(fileUri), JSONObject(fieldsJson))
+      performUpload(uploadId, uploadUrl, Uri.parse(fileUri), JSONObject(fieldsJson), JSONObject(headersJson))
       stopSelf(startId)
     }
     return START_NOT_STICKY
   }
 
-  private fun performUpload(uploadId: String, uploadUrl: String, fileUri: Uri, fields: JSONObject) {
+  private fun performUpload(
+    uploadId: String,
+    uploadUrl: String,
+    fileUri: Uri,
+    fields: JSONObject,
+    headers: JSONObject
+  ) {
     var connection: HttpURLConnection? = null
     try {
       val boundary = "----LeelaReel${UUID.randomUUID().toString().replace("-", "")}"
@@ -83,9 +91,14 @@ class ReelUploadService : Service() {
       connection = (URL(uploadUrl).openConnection() as HttpURLConnection).apply {
         requestMethod = "POST"
         doOutput = true
-        connectTimeout = 30000
-        readTimeout = 120000
+        connectTimeout = 60000
+        readTimeout = 960000
         setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
+        val headerNames = headers.keys()
+        while (headerNames.hasNext()) {
+          val name = headerNames.next()
+          setRequestProperty(name, headers.optString(name))
+        }
         if (contentLength >= 0) {
           setFixedLengthStreamingMode(contentLength)
         } else {
@@ -140,14 +153,17 @@ class ReelUploadService : Service() {
       updateProgress(uploadId, 100)
       showFinishedNotification("Reel published", "Your reel is live on Leela.", completed = true)
     } catch (error: Exception) {
-      val message = error.message ?: "The video could not be uploaded."
       getSharedPreferences(PREFERENCES, 0).edit()
         .putString("status", "failed")
-        .putString("error", message)
+        .putString("error", error.message ?: "The video could not be uploaded.")
         .putInt("responseCode", (error as? UploadResponseException)?.responseCode ?: 0)
         .putString("responseBody", (error as? UploadResponseException)?.responseBody ?: "")
         .apply()
-      showFinishedNotification("Reel upload failed", message, completed = false)
+      showFinishedNotification(
+        "Reel upload failed",
+        "Could not publish your reel. Open Leela and try again on a stable connection.",
+        completed = false
+      )
     } finally {
       connection?.disconnect()
       activeUploadId = null
@@ -275,6 +291,7 @@ class ReelUploadService : Service() {
     const val EXTRA_URL = "upload_url"
     const val EXTRA_FILE_URI = "file_uri"
     const val EXTRA_FIELDS = "fields"
+    const val EXTRA_HEADERS = "headers"
     private const val CHANNEL_ID = "leela-reel-upload"
     private const val NOTIFICATION_ID = 7411
     private const val BUFFER_SIZE = 64 * 1024

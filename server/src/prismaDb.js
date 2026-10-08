@@ -530,6 +530,11 @@ class PrismaDB {
     });
   }
 
+  async deleteAnnouncement(id) {
+    const result = await this.client.pmcAnnouncement.deleteMany({ where: { id } });
+    return result.count > 0;
+  }
+
   async addAppRelease(release) {
     return this.client.pmcAppRelease.create({ data: release });
   }

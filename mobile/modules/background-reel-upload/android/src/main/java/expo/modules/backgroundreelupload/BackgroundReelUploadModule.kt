@@ -11,7 +11,7 @@ class BackgroundReelUploadModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("BackgroundReelUpload")
 
-    AsyncFunction("startUpload") { url: String, fileUri: String, fields: Map<String, String> ->
+    AsyncFunction("startUpload") { url: String, fileUri: String, fields: Map<String, String>, headers: Map<String, String> ->
       val context = appContext.reactContext ?: throw IllegalStateException("App context is unavailable.")
       val preferences = context.getSharedPreferences(ReelUploadService.PREFERENCES, 0)
       if (preferences.getString("status", "idle") == "running") {
@@ -32,6 +32,7 @@ class BackgroundReelUploadModule : Module() {
         putString(ReelUploadService.EXTRA_URL, url)
         putString(ReelUploadService.EXTRA_FILE_URI, fileUri)
         putString(ReelUploadService.EXTRA_FIELDS, org.json.JSONObject(fields).toString())
+        putString(ReelUploadService.EXTRA_HEADERS, org.json.JSONObject(headers).toString())
       }
       val intent = Intent(context, ReelUploadService::class.java).putExtras(extras)
       try {
