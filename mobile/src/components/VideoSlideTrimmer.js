@@ -6,7 +6,6 @@ import {
   Dimensions,
   Image,
   PanResponder,
-  TouchableOpacity,
   Platform
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
@@ -33,8 +32,9 @@ export default function VideoSlideTrimmer({
   trimEnd,
   onTrimChange,
   onSeekPreview,
-  isMuted,
-  onToggleMute,
+  audioMode,
+  hasSelectedAudio,
+  onAudioModeChange,
   fileSizeMB
 }) {
   const [thumbnails, setThumbnails] = useState([]);
@@ -269,21 +269,22 @@ export default function VideoSlideTrimmer({
         </View>
       </View>
 
-      {/* 2. Info Row (Mute toggle + WhatsApp Duration Badge 0:39 • 7.7 MB) */}
+      {/* 2. Audio selection and trim duration */}
       <View style={styles.metaRow}>
-        <TouchableOpacity
-          style={styles.muteButtonPill}
-          onPress={onToggleMute}
-          activeOpacity={0.8}
-          accessibilityRole="button"
-          accessibilityLabel={isMuted ? 'Unmute original video audio' : 'Mute original video audio'}
-        >
+        <View style={styles.audioModeIndicator}>
           <Ionicons
-            name={isMuted ? 'volume-mute' : 'volume-high'}
-            size={18}
+            name={audioMode === 'muted' ? 'volume-mute' : 'volume-high'}
+            size={15}
             color="#ffffff"
           />
-        </TouchableOpacity>
+          <Text style={styles.audioModeIndicatorText}>
+            {hasSelectedAudio
+              ? audioMode === 'both' ? 'Original + music'
+                : audioMode === 'music' ? 'Music only'
+                  : audioMode === 'muted' ? 'Muted' : 'Original audio'
+              : audioMode === 'muted' ? 'Muted' : 'Original audio'}
+          </Text>
+        </View>
 
         <View style={styles.durationBadgePill}>
           <Text style={styles.durationText}>
@@ -411,15 +412,22 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginTop: 8,
     paddingHorizontal: 4,
+    justifyContent: 'space-between',
     gap: 8
   },
-  muteButtonPill: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
+  audioModeIndicator: {
+    minHeight: 30,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
     backgroundColor: 'rgba(255, 255, 255, 0.18)',
-    justifyContent: 'center',
-    alignItems: 'center'
+    paddingHorizontal: 10,
+    borderRadius: 16
+  },
+  audioModeIndicatorText: {
+    color: '#ffffff',
+    fontSize: 11,
+    fontWeight: '600'
   },
   durationBadgePill: {
     backgroundColor: 'rgba(255, 255, 255, 0.18)',

@@ -148,3 +148,25 @@ test('female PMC chat reports impose a persistent 48-hour block', () => {
     fs.writeFileSync = originalWriteFileSync;
   }
 });
+
+test('female PMC chat reporters can report only once in a rolling 24-hour period', () => {
+  const originalWriteFileSync = fs.writeFileSync;
+  fs.writeFileSync = () => {};
+  try {
+    const db = createTestDb();
+    db.reportPmcChatUser('student-girl', 'student-boy', 'Safety concern in PMC chat');
+
+    assert.throws(
+      () => db.reportPmcChatUser('student-girl', 'student-other', 'Safety concern in PMC chat'),
+      /only one PMC chat report every 24 hours/
+    );
+    assert.equal(db.chatReports.length, 1);
+
+    db.chatReports[0].createdAt = new Date(Date.now() - 24 * 60 * 60 * 1000 - 1).toISOString();
+    const nextReport = db.reportPmcChatUser('student-girl', 'student-other', 'Safety concern in PMC chat');
+    assert.ok(nextReport.blockedUntil);
+    assert.equal(db.chatReports.length, 2);
+  } finally {
+    fs.writeFileSync = originalWriteFileSync;
+  }
+});

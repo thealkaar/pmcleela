@@ -66,6 +66,8 @@ async function trimAndCropVideo(inputPath, {
   trimEnd,
   cropMode = '9:16',
   audioPath = null,
+  audioStart = 0,
+  audioMode = null,
   muteOriginalAudio = false
 }) {
   if (!ffmpegPath) {
@@ -81,6 +83,21 @@ async function trimAndCropVideo(inputPath, {
   }
   if (end - start > MAX_REEL_DURATION_SECONDS) {
     const error = new Error(`A reel can be no longer than ${MAX_REEL_DURATION_SECONDS} seconds.`);
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const musicStart = Number(audioStart);
+  if (!Number.isFinite(musicStart) || musicStart < 0) {
+    const error = new Error('The selected music range is invalid.');
+    error.statusCode = 400;
+    throw error;
+  }
+  const selectedAudioMode = audioMode || (audioPath
+    ? muteOriginalAudio ? 'music' : 'both'
+    : muteOriginalAudio ? 'muted' : 'original');
+  if (!['original', 'music', 'both', 'muted'].includes(selectedAudioMode)) {
+    const error = new Error('The selected audio mix is invalid.');
     error.statusCode = 400;
     throw error;
   }
@@ -103,26 +120,35 @@ async function trimAndCropVideo(inputPath, {
       '-y',
       '-filter_threads', '1'
     ];
-    if (audioPath) {
-      args.push('-ss', String(start), '-i', inputPath, '-stream_loop', '-1', '-i', audioPath);
+    const useMusic = audioPath && (selectedAudioMode === 'music' || selectedAudioMode === 'both');
+    if (useMusic) {
+      args.push(
+        '-ss', String(start),
+        '-i', inputPath,
+        '-stream_loop', '-1',
+        '-i', audioPath
+      );
     } else {
-      args.push('-i', inputPath);
+      args.push('-ss', String(start), '-i', inputPath);
     }
     args.push(
       '-t', String(end - start),
       '-map', '0:v:0'
     );
-    if (audioPath) {
-      if (!muteOriginalAudio && await hasAudioTrack(inputPath)) {
+    if (useMusic) {
+      if (selectedAudioMode === 'both' && await hasAudioTrack(inputPath)) {
         args.push(
           '-filter_complex',
-          '[0:a:0]volume=0.25[original];[1:a:0]volume=2.0[music];[original][music]amix=inputs=2:duration=first:dropout_transition=2:normalize=0,alimiter=limit=0.95[mixed]',
+          `[0:a:0]volume=0.25[original];[1:a:0]atrim=start=${musicStart},asetpts=PTS-STARTPTS,volume=2.0[music];[original][music]amix=inputs=2:duration=first:dropout_transition=2:normalize=0,alimiter=limit=0.95[mixed]`,
           '-map', '[mixed]'
         );
       } else {
-        args.push('-map', '1:a:0', '-af', 'volume=2.0,alimiter=limit=0.95');
+        args.push(
+          '-map', '1:a:0',
+          '-af', `atrim=start=${musicStart},asetpts=PTS-STARTPTS,volume=2.0,alimiter=limit=0.95`
+        );
       }
-    } else if (muteOriginalAudio) {
+    } else if (selectedAudioMode === 'muted' || selectedAudioMode === 'music') {
       args.push('-an');
     } else {
       args.push('-map', '0:a?');

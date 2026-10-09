@@ -9,6 +9,8 @@ const REPORTS_FILE = path.join(DATA_DIR, 'reel-reports.json');
 const CHAT_REPORTS_FILE = path.join(DATA_DIR, 'chat-reports.json');
 const STUDENT_IDENTITIES_FILE = path.join(DATA_DIR, 'student-identities.json');
 const ACCOUNT_DELETION_REQUESTS_FILE = path.join(DATA_DIR, 'account-deletion-requests.json');
+const CHAT_REPORT_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+const CHAT_REPORT_COOLDOWN_MESSAGE = 'You can submit only one PMC chat report every 24 hours.';
 const PUSH_TOKENS_FILE = path.join(DATA_DIR, 'push-tokens.json');
 const ANNOUNCEMENTS_FILE = path.join(DATA_DIR, 'announcements.json');
 const APP_RELEASES_FILE = path.join(DATA_DIR, 'app-releases.json');
@@ -500,6 +502,13 @@ class LocalDB {
     }
 
     const now = Date.now();
+    const recentReportCutoff = now - CHAT_REPORT_COOLDOWN_MS;
+    const recentReport = this.chatReports.some(report =>
+      report.reporterId === reporterId &&
+      Date.parse(report.createdAt || '') >= recentReportCutoff
+    );
+    if (recentReport) throw new Error(CHAT_REPORT_COOLDOWN_MESSAGE);
+
     const existingBlock = Date.parse(reportedUser.pmcChatBlockedUntil || '');
     const blockedUntil = new Date(Math.max(now + 2 * 24 * 60 * 60 * 1000, Number.isFinite(existingBlock) ? existingBlock : 0));
     const previousBlock = reportedUser.pmcChatBlockedUntil;

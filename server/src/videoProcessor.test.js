@@ -172,3 +172,65 @@ test('trimAndCropVideo removes source audio when muted and no external music is 
 
   assert.equal(hasAudio(result.path), false);
 });
+
+test('trimAndCropVideo honors audio modes and the selected music offset', {
+  skip: !ffmpegPath
+}, async (t) => {
+  const directory = createTestDirectory(t);
+  const sourceVideo = path.join(directory, 'with-audio.mp4');
+  const music = path.join(directory, 'two-sections.m4a');
+  createVideo(sourceVideo, true);
+  runFFmpeg([
+    '-hide_banner',
+    '-loglevel', 'error',
+    '-y',
+    '-f', 'lavfi',
+    '-i', 'sine=frequency=440:sample_rate=44100:duration=1',
+    '-f', 'lavfi',
+    '-i', 'sine=frequency=880:sample_rate=44100:duration=1',
+    '-filter_complex', '[0:a][1:a]concat=n=2:v=0:a=1[music]',
+    '-map', '[music]',
+    '-c:a', 'aac',
+    music
+  ]);
+
+  const original = await trimAndCropVideo(sourceVideo, {
+    trimStart: 0,
+    trimEnd: 1,
+    audioPath: music,
+    audioMode: 'original'
+  });
+  assert.ok(getBandMeanVolume(original.path, 220) > -24);
+  assert.ok(getBandMeanVolume(original.path, 880) < -50);
+
+  const musicOnly = await trimAndCropVideo(sourceVideo, {
+    trimStart: 0,
+    trimEnd: 1,
+    audioPath: music,
+    audioStart: 1,
+    audioMode: 'music'
+  });
+  assert.ok(getBandMeanVolume(musicOnly.path, 880) > -24);
+  const firstSectionVolume = getBandMeanVolume(musicOnly.path, 440);
+  const sourceVolumeInMusicOnly = getBandMeanVolume(musicOnly.path, 220);
+  assert.ok(firstSectionVolume < -50, `The unselected first music section should be absent; got ${firstSectionVolume} dB.`);
+  assert.ok(sourceVolumeInMusicOnly < -50, `Original audio should be absent; got ${sourceVolumeInMusicOnly} dB.`);
+
+  const both = await trimAndCropVideo(sourceVideo, {
+    trimStart: 0,
+    trimEnd: 1,
+    audioPath: music,
+    audioStart: 1,
+    audioMode: 'both'
+  });
+  assert.ok(getBandMeanVolume(both.path, 880) > -24);
+  assert.ok(getBandMeanVolume(both.path, 220) > -40);
+
+  const muted = await trimAndCropVideo(sourceVideo, {
+    trimStart: 0,
+    trimEnd: 1,
+    audioPath: music,
+    audioMode: 'muted'
+  });
+  assert.equal(hasAudio(muted.path), false);
+});

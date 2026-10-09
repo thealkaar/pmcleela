@@ -25,6 +25,7 @@ import { Ionicons } from '@expo/vector-icons';
 import io from 'socket.io-client';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import BackgroundReelUpload from '../../modules/background-reel-upload/src';
+import AudioTrackSelector from '../components/AudioTrackSelector';
 import VideoSlideTrimmer from '../components/VideoSlideTrimmer';
 import { getBaseUrl, REEL_SHARE_BASE_URL } from '../config';
 
@@ -104,10 +105,14 @@ function VideoStoryEditor({
   const [trimStart, setTrimStart] = useState(0);
   const [trimEnd, setTrimEnd] = useState(0);
   const [totalDuration, setTotalDuration] = useState(0);
-  const [isOriginalAudioMuted, setIsOriginalAudioMuted] = useState(false);
+  const [audioMode, setAudioMode] = useState('original');
   const [cropMode, setCropMode] = useState('9:16');
   const [caption, setCaption] = useState('');
   const [selectedAudio, setSelectedAudio] = useState(null);
+  const [selectedAudioDuration, setSelectedAudioDuration] = useState(0);
+  const [selectedAudioStart, setSelectedAudioStart] = useState(0);
+  const [audioLoadError, setAudioLoadError] = useState('');
+  const [isPreviewingMix, setIsPreviewingMix] = useState(false);
   const [playbackTime, setPlaybackTime] = useState(0);
   const [videoLoadError, setVideoLoadError] = useState(null);
   const [isCaptionKeyboardVisible, setIsCaptionKeyboardVisible] = useState(false);
@@ -127,8 +132,55 @@ function VideoStoryEditor({
 
   const player = useVideoPlayer(videoUri, (p) => {
     p.loop = true;
-    p.muted = isOriginalAudioMuted;
+    p.muted = audioMode === 'music' || audioMode === 'muted';
   });
+  const audioPlayer = useVideoPlayer(selectedAudio?.uri || null, (p) => {
+    p.loop = false;
+  });
+
+  useEffect(() => {
+    setSelectedAudioDuration(0);
+    setSelectedAudioStart(0);
+    setAudioLoadError('');
+    setIsPreviewingMix(false);
+    if (!selectedAudio) return undefined;
+
+    const setDuration = (duration) => {
+      if (!Number.isFinite(duration) || duration <= 0) return;
+      setSelectedAudioDuration(duration);
+      setAudioLoadError('');
+    };
+    const sourceSubscription = audioPlayer.addListener('sourceLoad', ({ duration }) => {
+      setDuration(duration);
+    });
+    const statusSubscription = audioPlayer.addListener('statusChange', ({ status, error }) => {
+      if (status === 'readyToPlay') setDuration(Number(audioPlayer.duration));
+      if (status === 'error') {
+        setAudioLoadError(error?.message || 'The selected music could not be opened.');
+      }
+    });
+    if (audioPlayer.status === 'readyToPlay') setDuration(Number(audioPlayer.duration));
+    if (audioPlayer.status === 'error') setAudioLoadError('The selected music could not be opened.');
+    return () => {
+      sourceSubscription.remove();
+      statusSubscription.remove();
+      audioPlayer.pause();
+    };
+  }, [audioPlayer, selectedAudio]);
+
+  useEffect(() => {
+    if (!selectedAudio || selectedAudioDuration <= 0) return;
+    const selectionDuration = Math.min(trimEnd - trimStart, selectedAudioDuration);
+    const maxStart = Math.max(0, selectedAudioDuration - selectionDuration);
+    setSelectedAudioStart((currentStart) => Math.min(currentStart, maxStart));
+  }, [selectedAudio, selectedAudioDuration, trimEnd, trimStart]);
+
+  useEffect(() => {
+    if (uploading) {
+      audioPlayer.pause();
+      setIsPreviewingMix(false);
+    }
+  }, [audioPlayer, uploading]);
 
   useEffect(() => {
     if (!player) return;
@@ -208,10 +260,54 @@ function VideoStoryEditor({
   }, [player, uploading]);
 
   useEffect(() => {
-    if (player) {
-      player.muted = isOriginalAudioMuted;
+    if (!player) return;
+    player.muted = audioMode === 'music' || audioMode === 'muted';
+    player.volume = audioMode === 'both' ? 0.25 : 1;
+    if (audioMode === 'original' || audioMode === 'muted') {
+      audioPlayer.pause();
+      if (audioMode === 'muted') setIsPreviewingMix(false);
+    } else if (isPreviewingMix) {
+      audioPlayer.volume = 1;
+      audioPlayer.currentTime = selectedAudioStart;
+      audioPlayer.play();
     }
-  }, [isOriginalAudioMuted, player]);
+  }, [audioMode, audioPlayer, isPreviewingMix, player, selectedAudioStart]);
+
+  useEffect(() => {
+    if (!player || !isPreviewingMix) return undefined;
+    const clipDuration = Math.max(0, trimEnd - trimStart);
+    const musicDuration = Math.min(clipDuration, selectedAudioDuration);
+    const interval = setInterval(() => {
+      try {
+        if (player.currentTime >= trimEnd) {
+          player.currentTime = trimStart;
+          player.play();
+          if (audioMode === 'both' || audioMode === 'music') {
+            audioPlayer.currentTime = selectedAudioStart;
+            audioPlayer.play();
+          }
+        } else if (
+          (audioMode === 'both' || audioMode === 'music') &&
+          audioPlayer.currentTime >= selectedAudioStart + musicDuration
+        ) {
+          audioPlayer.currentTime = selectedAudioStart;
+          audioPlayer.play();
+        }
+      } catch (error) {
+        console.warn('[Reels] Could not keep the music preview in sync:', error.message);
+      }
+    }, 100);
+    return () => clearInterval(interval);
+  }, [
+    audioMode,
+    audioPlayer,
+    isPreviewingMix,
+    player,
+    selectedAudioDuration,
+    selectedAudioStart,
+    trimEnd,
+    trimStart
+  ]);
 
   const handleSeekPreview = (timeSec) => {
     if (player) {
@@ -255,9 +351,33 @@ function VideoStoryEditor({
         return;
       }
       setSelectedAudio(audio);
+      setAudioMode('both');
     } catch (error) {
       console.error('[Reels] Could not open the device music picker:', error);
       Alert.alert('Music Picker Error', 'Could not open music files. Please try again.');
+    }
+  };
+
+  const toggleMixPreview = () => {
+    if (!selectedAudio || !selectedAudioDuration || audioLoadError) {
+      Alert.alert('Music not ready', audioLoadError || 'Wait for the selected music to finish loading.');
+      return;
+    }
+    if (isPreviewingMix) {
+      setIsPreviewingMix(false);
+      audioPlayer.pause();
+      player.pause();
+      return;
+    }
+    try {
+      player.currentTime = trimStart;
+      audioPlayer.currentTime = selectedAudioStart;
+      player.play();
+      if (audioMode === 'both' || audioMode === 'music') audioPlayer.play();
+      setIsPreviewingMix(true);
+    } catch (error) {
+      console.error('[Reels] Could not preview the music mix:', error);
+      Alert.alert('Preview unavailable', 'Could not start music preview. Try selecting the music again.');
     }
   };
 
@@ -334,8 +454,8 @@ function VideoStoryEditor({
             trimEnd={trimEnd}
             onTrimChange={handleTrimChange}
             onSeekPreview={handleSeekPreview}
-            isMuted={isOriginalAudioMuted}
-            onToggleMute={() => setIsOriginalAudioMuted((muted) => !muted)}
+            audioMode={audioMode}
+            hasSelectedAudio={!!selectedAudio}
           />
         ) : (
           <View style={styles.storyTrimmerLoading}>
@@ -344,6 +464,42 @@ function VideoStoryEditor({
           </View>
         )}
       </View>
+
+      {selectedAudio && (
+        <View style={styles.audioEditorControls}>
+          {selectedAudioDuration > 0 ? (
+            <AudioTrackSelector
+              duration={selectedAudioDuration}
+              selectionDuration={Math.min(trimEnd - trimStart, selectedAudioDuration)}
+              start={selectedAudioStart}
+              onStartChange={setSelectedAudioStart}
+            />
+          ) : (
+            <View style={styles.audioLoadingCard}>
+              <ActivityIndicator size="small" color="#f472b6" />
+              <Text style={styles.audioLoadingText}>
+                {audioLoadError || 'Loading music duration…'}
+              </Text>
+            </View>
+          )}
+          <TouchableOpacity
+            style={styles.mixPreviewButton}
+            onPress={toggleMixPreview}
+            disabled={!selectedAudioDuration || !!audioLoadError}
+            accessibilityRole="button"
+            accessibilityLabel={isPreviewingMix ? 'Stop music mix preview' : 'Preview music mix'}
+          >
+            <Ionicons
+              name={isPreviewingMix ? 'stop-circle-outline' : 'play-circle-outline'}
+              size={20}
+              color="#fff"
+            />
+            <Text style={styles.mixPreviewButtonText}>
+              {isPreviewingMix ? 'Stop preview' : 'Preview music mix'}
+            </Text>
+          </TouchableOpacity>
+        </View>
+      )}
 
       {/* Bottom Floating Caption & Send Bar */}
       <View
@@ -367,7 +523,12 @@ function VideoStoryEditor({
               <Ionicons name="musical-note" size={11} color="#f472b6" />
               <Text style={styles.audioPillActiveText} numberOfLines={1}>{selectedAudio.name}</Text>
               <TouchableOpacity
-                onPress={() => setSelectedAudio(null)}
+                onPress={() => {
+                  setIsPreviewingMix(false);
+                  audioPlayer.pause();
+                  setSelectedAudio(null);
+                  setAudioMode('original');
+                }}
                 accessibilityRole="button"
                 accessibilityLabel="Remove selected music"
                 hitSlop={8}
@@ -376,6 +537,35 @@ function VideoStoryEditor({
               </TouchableOpacity>
             </View>
           )}
+        </View>
+        <View style={styles.audioModeRow}>
+          {[
+            { value: 'original', label: 'Original' },
+            { value: 'music', label: 'Music' },
+            { value: 'both', label: 'Both' },
+            { value: 'muted', label: 'Mute' }
+          ].map(option => (
+            <TouchableOpacity
+              key={option.value}
+              style={[
+                styles.audioModeButton,
+                audioMode === option.value && styles.audioModeButtonSelected,
+                !selectedAudio && (option.value === 'music' || option.value === 'both') &&
+                  styles.audioModeButtonDisabled
+              ]}
+              onPress={() => setAudioMode(option.value)}
+              disabled={!selectedAudio && (option.value === 'music' || option.value === 'both')}
+              accessibilityRole="button"
+              accessibilityState={{ selected: audioMode === option.value }}
+            >
+              <Text style={[
+                styles.audioModeButtonText,
+                audioMode === option.value && styles.audioModeButtonTextSelected
+              ]}>
+                {option.label}
+              </Text>
+            </TouchableOpacity>
+          ))}
         </View>
 
         {/* WhatsApp-Style Rounded Dark Input Bar + Green Circular Send Button */}
@@ -398,8 +588,9 @@ function VideoStoryEditor({
               trimEnd,
               caption,
               selectedAudio,
+              audioStart: selectedAudioStart,
               cropMode,
-              muteOriginalAudio: isOriginalAudioMuted
+              audioMode
             })}
             disabled={uploading || totalDuration <= 0 || trimEnd <= trimStart}
             activeOpacity={0.8}
@@ -628,10 +819,10 @@ async function uploadMediaFile(
   );
   const headers = { Authorization: `Bearer ${authToken}` };
 
-  if (Platform.OS === 'android' && fieldName === 'video' && BackgroundReelUpload) {
+  if (Platform.OS === 'android' && BackgroundReelUpload) {
     let uploadId;
     try {
-      uploadId = await BackgroundReelUpload.startUpload(url, uri, parameters, headers);
+      uploadId = await BackgroundReelUpload.startUpload(url, uri, parameters, headers, fieldName);
     } catch (error) {
       console.error('[Reels] Could not start the Android upload service:', error);
       const uploadError = new Error('The upload could not be started.');
@@ -812,6 +1003,7 @@ export default function LeelaReelsScreen({
   const [storyEditorVisible, setStoryEditorVisible] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadPhase, setUploadPhase] = useState('video');
   const [selectedVideoUri, setSelectedVideoUri] = useState(null);
   const [publishSuccessVisible, setPublishSuccessVisible] = useState(false);
   const isTabActiveRef = useRef(isTabActive);
@@ -1212,8 +1404,9 @@ export default function LeelaReelsScreen({
     trimEnd,
     caption,
     selectedAudio,
+    audioStart,
     cropMode,
-    muteOriginalAudio
+    audioMode
   }) => {
     if (!selectedVideoUri) {
       Alert.alert('No Video', 'Please select a video file first.');
@@ -1221,34 +1414,38 @@ export default function LeelaReelsScreen({
     }
 
     let stagedAudioId = null;
+    const shouldUploadMusic = selectedAudio && (audioMode === 'music' || audioMode === 'both');
     try {
       setUploading(true);
+      setStoryEditorVisible(false);
       setUploadProgress(0);
+      setUploadPhase(shouldUploadMusic ? 'music' : 'video');
 
       const reelCaption = caption?.trim() || 'Campus vibes on Leela';
       const uploadUrl = `${getBaseUrl(serverHost)}/api/reels/upload`;
       let audioFields = {};
 
-      if (selectedAudio) {
+      if (shouldUploadMusic) {
         const audioUrl = `${getBaseUrl(serverHost)}/api/reels/audio-upload`;
         const audioResult = await uploadMediaFile(audioUrl, selectedAudio.uri, {
           fields: {},
           authToken,
           fieldName: 'audio',
           mimeType: selectedAudio.mimeType || 'audio/mpeg',
-          onProgress: (progress) => setUploadProgress(Math.floor(progress * 0.15))
+          onProgress: (progress) => setUploadProgress(Math.floor(progress * 0.1))
         });
         stagedAudioId = audioResult.audioUploadId;
         if (!stagedAudioId) {
           throw new Error('The server did not confirm the music upload. Please try again.');
         }
-        setUploadProgress(15);
+        setUploadProgress(10);
         audioFields = {
           audioUploadId: stagedAudioId,
           audioTitle: selectedAudio.name?.trim().slice(0, 120) || 'Selected music'
         };
       }
 
+      setUploadPhase('video');
       const uploadResult = await uploadMediaFile(uploadUrl, selectedVideoUri, {
         fieldName: 'video',
         fields: {
@@ -1257,18 +1454,23 @@ export default function LeelaReelsScreen({
           audioUploadId: audioFields.audioUploadId,
           trimStart: String(trimStart),
           trimEnd: String(trimEnd),
+          audioStart: String(audioStart || 0),
+          audioMode: audioMode || (selectedAudio ? 'both' : 'original'),
           cropMode: cropMode || '9:16',
-          muteOriginalAudio: String(Boolean(muteOriginalAudio))
+          muteOriginalAudio: String(audioMode === 'music' || audioMode === 'muted')
         },
         authToken,
-        onProgress: (progress) => setUploadProgress(15 + Math.floor(progress * 0.84))
+        onProgress: (progress) => {
+          setUploadPhase(progress >= 99 ? 'processing' : 'video');
+          setUploadProgress((shouldUploadMusic ? 10 : 0) + Math.floor(progress * (shouldUploadMusic ? 0.89 : 0.98)));
+        }
       });
       stagedAudioId = null;
 
       if (uploadResult && uploadResult.success) {
+        setUploadProgress(100);
         // Fetch all reels from server to display permanently
         await fetchReels();
-        setStoryEditorVisible(false);
         setSelectedVideoUri(null);
         if (isTabActiveRef.current) setPublishSuccessVisible(true);
       } else {
@@ -1293,10 +1495,12 @@ export default function LeelaReelsScreen({
         }
       }
       if (isTabActiveRef.current) {
+        setStoryEditorVisible(true);
         Alert.alert('Could Not Publish Reel', getPublishErrorMessage(err));
       }
     } finally {
       setUploading(false);
+      setUploadPhase('video');
     }
   };
 
@@ -1339,7 +1543,11 @@ export default function LeelaReelsScreen({
           <Ionicons name="cloud-upload-outline" size={18} color="#a5f3fc" />
           <View style={styles.uploadStatusTextGroup}>
             <Text style={styles.uploadStatusTitle}>
-              {uploadProgress >= 99 ? 'Finishing your reel' : 'Publishing your reel'}
+              {uploadPhase === 'music'
+                ? 'Uploading selected music'
+                : uploadPhase === 'processing'
+                  ? 'Processing your reel'
+                  : 'Uploading your reel'}
             </Text>
             <View style={styles.uploadStatusTrack}>
               <View style={[styles.uploadStatusFill, { width: `${uploadProgress}%` }]} />
@@ -2177,6 +2385,45 @@ const styles = StyleSheet.create({
     right: 0,
     zIndex: 25
   },
+  audioEditorControls: {
+    position: 'absolute',
+    top: 198,
+    left: 0,
+    right: 0,
+    zIndex: 25
+  },
+  audioLoadingCard: {
+    minHeight: 54,
+    marginHorizontal: 18,
+    paddingHorizontal: 12,
+    borderRadius: 14,
+    backgroundColor: 'rgba(10, 12, 20, 0.88)',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8
+  },
+  audioLoadingText: {
+    color: '#cbd5e1',
+    fontSize: 11
+  },
+  mixPreviewButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    alignSelf: 'center',
+    gap: 7,
+    marginTop: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 18,
+    backgroundColor: 'rgba(190, 24, 93, 0.92)'
+  },
+  mixPreviewButtonText: {
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: '700'
+  },
   storyTrimmerLoading: {
     minHeight: 74,
     flexDirection: 'row',
@@ -2277,6 +2524,37 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 8,
     gap: 8
+  },
+  audioModeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: 5,
+    marginBottom: 8,
+    padding: 4,
+    borderRadius: 18,
+    backgroundColor: 'rgba(0, 0, 0, 0.72)'
+  },
+  audioModeButton: {
+    minWidth: 54,
+    alignItems: 'center',
+    paddingHorizontal: 9,
+    paddingVertical: 6,
+    borderRadius: 14
+  },
+  audioModeButtonSelected: {
+    backgroundColor: '#be185d'
+  },
+  audioModeButtonDisabled: {
+    opacity: 0.4
+  },
+  audioModeButtonText: {
+    color: '#cbd5e1',
+    fontSize: 10,
+    fontWeight: '700'
+  },
+  audioModeButtonTextSelected: {
+    color: '#ffffff'
   },
   personaTagPill: {
     backgroundColor: 'rgba(0, 0, 0, 0.65)',

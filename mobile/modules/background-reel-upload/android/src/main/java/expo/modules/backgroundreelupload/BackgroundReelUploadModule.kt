@@ -11,8 +11,11 @@ class BackgroundReelUploadModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("BackgroundReelUpload")
 
-    AsyncFunction("startUpload") { url: String, fileUri: String, fields: Map<String, String>, headers: Map<String, String> ->
+    AsyncFunction("startUpload") { url: String, fileUri: String, fields: Map<String, String>, headers: Map<String, String>, fieldName: String ->
       val context = appContext.reactContext ?: throw IllegalStateException("App context is unavailable.")
+      if (fieldName != "video" && fieldName != "audio") {
+        throw IllegalArgumentException("Unsupported upload file field.")
+      }
       val preferences = context.getSharedPreferences(ReelUploadService.PREFERENCES, 0)
       if (preferences.getString("status", "idle") == "running") {
         throw IllegalStateException("A reel upload is already in progress.")
@@ -33,6 +36,7 @@ class BackgroundReelUploadModule : Module() {
         putString(ReelUploadService.EXTRA_FILE_URI, fileUri)
         putString(ReelUploadService.EXTRA_FIELDS, org.json.JSONObject(fields).toString())
         putString(ReelUploadService.EXTRA_HEADERS, org.json.JSONObject(headers).toString())
+        putString(ReelUploadService.EXTRA_FILE_FIELD_NAME, fieldName)
       }
       val intent = Intent(context, ReelUploadService::class.java).putExtras(extras)
       try {

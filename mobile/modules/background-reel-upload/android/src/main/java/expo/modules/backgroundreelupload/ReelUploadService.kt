@@ -24,6 +24,7 @@ import kotlin.math.roundToInt
 class ReelUploadService : Service() {
   private val executor = Executors.newSingleThreadExecutor()
   private var activeUploadId: String? = null
+  private var activeFileFieldName = "video"
   private var lastNotifiedProgress = -1
 
   override fun onBind(intent: Intent?): IBinder? = null
@@ -34,8 +35,10 @@ class ReelUploadService : Service() {
     val fileUri = intent?.getStringExtra(EXTRA_FILE_URI)
     val fieldsJson = intent?.getStringExtra(EXTRA_FIELDS)
     val headersJson = intent?.getStringExtra(EXTRA_HEADERS)
+    val fileFieldName = intent?.getStringExtra(EXTRA_FILE_FIELD_NAME) ?: "video"
     if (uploadId.isNullOrBlank() || uploadUrl.isNullOrBlank() || fileUri.isNullOrBlank() ||
-      fieldsJson.isNullOrBlank() || headersJson.isNullOrBlank()) {
+      fieldsJson.isNullOrBlank() || headersJson.isNullOrBlank() ||
+      (fileFieldName != "video" && fileFieldName != "audio")) {
       getSharedPreferences(PREFERENCES, 0).edit()
         .putString("status", "failed")
         .putString("error", "The upload request was incomplete.")
@@ -46,6 +49,7 @@ class ReelUploadService : Service() {
     if (activeUploadId == uploadId) return START_NOT_STICKY
 
     activeUploadId = uploadId
+    activeFileFieldName = fileFieldName
     lastNotifiedProgress = -1
     getSharedPreferences(PREFERENCES, 0).edit()
       .putString("uploadId", uploadId)
@@ -57,9 +61,19 @@ class ReelUploadService : Service() {
       .apply()
 
     ensureNotificationChannel()
-    startForegroundCompat(buildNotification(0, "Preparing your reel"))
+    startForegroundCompat(buildNotification(
+      0,
+      if (fileFieldName == "audio") "Preparing selected music" else "Preparing your reel"
+    ))
     executor.execute {
-      performUpload(uploadId, uploadUrl, Uri.parse(fileUri), JSONObject(fieldsJson), JSONObject(headersJson))
+      performUpload(
+        uploadId,
+        uploadUrl,
+        Uri.parse(fileUri),
+        fileFieldName,
+        JSONObject(fieldsJson),
+        JSONObject(headersJson)
+      )
       stopSelf(startId)
     }
     return START_NOT_STICKY
@@ -69,18 +83,19 @@ class ReelUploadService : Service() {
     uploadId: String,
     uploadUrl: String,
     fileUri: Uri,
+    fileFieldName: String,
     fields: JSONObject,
     headers: JSONObject
   ) {
     var connection: HttpURLConnection? = null
     try {
       val boundary = "----LeelaReel${UUID.randomUUID().toString().replace("-", "")}"
-      val filename = getFileName(fileUri)
-      val mimeType = contentResolver.getType(fileUri) ?: "video/mp4"
+      val filename = getFileName(fileUri, fileFieldName)
+      val mimeType = contentResolver.getType(fileUri) ?: if (fileFieldName == "audio") "audio/mpeg" else "video/mp4"
       val fileSize = getFileSize(fileUri)
       val prefix = multipartPrefix(fields, boundary)
       val fileHeader = "--$boundary\r\n" +
-        "Content-Disposition: form-data; name=\"video\"; filename=\"${quoteHeader(filename)}\"\r\n" +
+        "Content-Disposition: form-data; name=\"$fileFieldName\"; filename=\"${quoteHeader(filename)}\"\r\n" +
         "Content-Type: $mimeType\r\n\r\n"
       val suffix = "\r\n--$boundary--\r\n"
       val prefixBytes = prefix.toByteArray(StandardCharsets.UTF_8)
@@ -107,7 +122,7 @@ class ReelUploadService : Service() {
       }
 
       val input = contentResolver.openInputStream(fileUri)
-        ?: throw IllegalStateException("Could not open the selected video.")
+        ?: throw IllegalStateException("Could not open the selected file.")
       input.use { source ->
         BufferedOutputStream(connection.outputStream, BUFFER_SIZE).use { output ->
           output.write(prefixBytes)
@@ -151,17 +166,25 @@ class ReelUploadService : Service() {
         .remove("error")
         .apply()
       updateProgress(uploadId, 100)
-      showFinishedNotification("Reel published", "Your reel is live on Leela.", completed = true)
+      if (fileFieldName == "audio") {
+        showFinishedNotification("Music ready", "Selected music is ready for your reel.", completed = true)
+      } else {
+        showFinishedNotification("Reel published", "Your reel is live on Leela.", completed = true)
+      }
     } catch (error: Exception) {
       getSharedPreferences(PREFERENCES, 0).edit()
         .putString("status", "failed")
-        .putString("error", error.message ?: "The video could not be uploaded.")
+        .putString("error", error.message ?: "The selected file could not be uploaded.")
         .putInt("responseCode", (error as? UploadResponseException)?.responseCode ?: 0)
         .putString("responseBody", (error as? UploadResponseException)?.responseBody ?: "")
         .apply()
       showFinishedNotification(
-        "Reel upload failed",
-        "Could not publish your reel. Open Leela and try again on a stable connection.",
+        if (fileFieldName == "audio") "Music upload failed" else "Reel upload failed",
+        if (fileFieldName == "audio") {
+          "Could not upload your selected music. Open Leela and try again on a stable connection."
+        } else {
+          "Could not publish your reel. Open Leela and try again on a stable connection."
+        },
         completed = false
       )
     } finally {
@@ -184,7 +207,7 @@ class ReelUploadService : Service() {
     return output.toString()
   }
 
-  private fun getFileName(uri: Uri): String {
+  private fun getFileName(uri: Uri, fileFieldName: String): String {
     if (uri.scheme == "content") {
       contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
         if (cursor.moveToFirst()) {
@@ -193,7 +216,8 @@ class ReelUploadService : Service() {
         }
       }
     }
-    return uri.lastPathSegment?.substringAfterLast('/')?.takeIf { it.isNotBlank() } ?: "reel.mp4"
+    return uri.lastPathSegment?.substringAfterLast('/')?.takeIf { it.isNotBlank() }
+      ?: if (fileFieldName == "audio") "selected-audio" else "reel.mp4"
   }
 
   private fun getFileSize(uri: Uri): Long {
@@ -248,8 +272,15 @@ class ReelUploadService : Service() {
       @Suppress("DEPRECATION")
       Notification.Builder(this)
     }
+    val defaultTitle = if (activeFileFieldName == "audio") {
+      if (progress >= 99) "Finishing music upload" else "Uploading selected music"
+    } else if (progress >= 99) {
+      "Finishing your reel"
+    } else {
+      "Publishing your reel"
+    }
     builder.setSmallIcon(android.R.drawable.stat_sys_upload)
-      .setContentTitle(title ?: if (progress >= 99) "Finishing your reel" else "Publishing your reel")
+      .setContentTitle(title ?: defaultTitle)
       .setContentText(message)
       .setOnlyAlertOnce(true)
       .setOngoing(progress < 100)
@@ -290,6 +321,7 @@ class ReelUploadService : Service() {
     const val EXTRA_UPLOAD_ID = "upload_id"
     const val EXTRA_URL = "upload_url"
     const val EXTRA_FILE_URI = "file_uri"
+    const val EXTRA_FILE_FIELD_NAME = "file_field_name"
     const val EXTRA_FIELDS = "fields"
     const val EXTRA_HEADERS = "headers"
     private const val CHANNEL_ID = "leela-reel-upload"

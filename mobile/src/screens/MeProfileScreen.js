@@ -68,6 +68,7 @@ export default function MeProfileScreen({
   const [isLoadingDeletionRequest, setIsLoadingDeletionRequest] = useState(false);
   const [deletionRequestError, setDeletionRequestError] = useState('');
   const [announcements, setAnnouncements] = useState([]);
+  const [announcementsUserId, setAnnouncementsUserId] = useState(null);
   const [appRelease, setAppRelease] = useState(null);
   const [isDownloadingUpdate, setIsDownloadingUpdate] = useState(false);
   const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
@@ -126,7 +127,9 @@ export default function MeProfileScreen({
     const loadUpdates = async () => {
       const baseUrl = getBaseUrl(serverHost);
       const [announcementResult, releaseResult] = await Promise.allSettled([
-        fetch(`${baseUrl}/api/announcements`).then(async response => {
+        fetch(`${baseUrl}/api/announcements`, {
+          headers: { Authorization: `Bearer ${authToken}` }
+        }).then(async response => {
           const result = await response.json();
           if (!response.ok || !result.success) throw new Error(result.message || 'Could not load announcements.');
           return result.data;
@@ -140,6 +143,7 @@ export default function MeProfileScreen({
       if (!active) return;
       if (announcementResult.status === 'fulfilled') {
         setAnnouncements(announcementResult.value);
+        setAnnouncementsUserId(notificationUserId);
       } else {
         console.warn('[Announcements] Could not refresh messages:', announcementResult.reason?.message);
       }
@@ -171,7 +175,7 @@ export default function MeProfileScreen({
       notificationSubscription?.remove();
       subscription.remove();
     };
-  }, [isTabActive, serverHost]);
+  }, [isTabActive, serverHost, authToken, notificationUserId]);
 
   useEffect(() => {
     if (isTabActive && notificationOpenRequest > 0) {
@@ -252,6 +256,7 @@ export default function MeProfileScreen({
     ? dismissedNotifications
     : { announcementIds: [], releaseCodes: [] };
   const visibleAnnouncements = isLoadingDismissedNotifications
+    || announcementsUserId !== notificationUserId
     ? []
     : announcements.filter(
       item => !dismissedForCurrentUser.announcementIds.includes(String(item.id))
@@ -932,14 +937,23 @@ export default function MeProfileScreen({
               <ScrollView style={styles.myReelsList} showsVerticalScrollIndicator={false}>
                 {myReels.map(reel => (
                   <View key={reel.id} style={styles.myReelItem}>
-                    <View style={styles.myReelDetails}>
+                    <TouchableOpacity
+                      style={styles.myReelDetails}
+                      onPress={() => {
+                        setShowMyReelsModal(false);
+                        onOpenReel?.(String(reel.id));
+                      }}
+                      activeOpacity={0.75}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Play reel ${reel.caption || ''}`}
+                    >
                       <Text style={styles.myReelCaption} numberOfLines={2}>
                         {reel.caption || 'Campus reel'}
                       </Text>
                       <Text style={styles.myReelDate}>
                         {reel.createdAt ? new Date(reel.createdAt).toLocaleDateString() : 'Uploaded reel'}
                       </Text>
-                    </View>
+                    </TouchableOpacity>
                     <TouchableOpacity
                       style={[styles.myReelDeleteButton, deletingReelId === reel.id && styles.disabledButton]}
                       onPress={() => deleteMyReel(reel)}

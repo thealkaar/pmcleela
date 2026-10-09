@@ -27,12 +27,14 @@
   * Mute / unmute audio toggle.
   * Animated like button (heart) with live counter.
   * Slide-up campus comments drawer to drop gossip & banter.
-  * **"Post to Leela" Editor:** Trim a selected clip and choose 9:16, square, or full-frame output before publishing with a caption.
+  * **"Post to Leela" Editor:** Trim a selected clip and choose 9:16, square, or full-frame output before publishing with a caption. Add music, choose a music segment to match the video length, preview the mix, and keep original audio, music, both, or mute. Publishing continues in the background with progress shown on Leela.
   * **Separate identities:** PMC chat and Leela have different usernames, editable from **Me**; reels and comments use the Leela username.
-  * **Your reels:** Open **Me → My uploaded reels** to review or delete reels you posted.
+  * **Your reels:** Open **Me → My uploaded reels** to tap and watch or delete reels you posted.
   * The server encodes and stores only the selected clip range; bundled FFmpeg is installed with the server dependencies.
 
-Female students can report an account from an active PMC chat. A reported account is blocked from PMC chat for 48 hours; Leela and other account features remain available.
+Female students can report one account from PMC chat in any rolling 24-hour period. A reported account is blocked from PMC chat for 48 hours; Leela and other account features remain available.
+
+Android prevents screenshots and screen recordings while PMC Leela is open. iOS does not provide an API for apps to prevent screenshots.
 
 Students can request account deletion from **Me → Settings**. The account stays active while the request is pending; PMC admins can approve immediate deletion or reject it, and unresolved requests are automatically deleted after 24 hours. The verified email's original gender remains locked after deletion to prevent re-registration with a different gender.
 

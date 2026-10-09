@@ -373,6 +373,14 @@ function AppContent() {
         await AsyncStorage.removeItem(PUSH_TOKEN_STORAGE_KEY);
       }
     }).catch(error => console.warn('[Push] Could not read the saved device token:', error.message));
+    if (Platform.OS !== 'web' && !(Platform.OS === 'android' && isRunningInExpoGo())) {
+      try {
+        const Notifications = await import('expo-notifications');
+        await Notifications.dismissAllNotificationsAsync();
+      } catch (error) {
+        console.warn('[Notifications] Could not clear notifications on logout:', error.message);
+      }
+    }
     setActiveChatPartner(null);
     setAuthToken(null);
     setCurrentUser(null);

@@ -1,9 +1,11 @@
 const crypto = require('crypto');
 const { promisify } = require('util');
-const { PrismaClient } = require('@prisma/client');
+const { Prisma, PrismaClient } = require('@prisma/client');
 const { v4: uuidv4 } = require('uuid');
 
 const ACCOUNT_NOT_FOUND = 'Account not found. Please check your Email / Scholar No / Anonymous Name or Register.';
+const CHAT_REPORT_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+const CHAT_REPORT_COOLDOWN_MESSAGE = 'You can submit only one PMC chat report every 24 hours.';
 const scrypt = promisify(crypto.scrypt);
 
 function isAnonymousNameUniqueError(error) {
@@ -430,6 +432,15 @@ class PrismaDB {
         }
 
         const now = Date.now();
+        const recentReport = await transaction.pmcChatReport.findFirst({
+          where: {
+            reporterId,
+            createdAt: { gte: new Date(now - CHAT_REPORT_COOLDOWN_MS) }
+          },
+          select: { id: true }
+        });
+        if (recentReport) throw new Error(CHAT_REPORT_COOLDOWN_MESSAGE);
+
         const existingBlock = Date.parse(reportedUser.data.pmcChatBlockedUntil || '');
         const blockedUntil = new Date(
           Math.max(now + 2 * 24 * 60 * 60 * 1000, Number.isFinite(existingBlock) ? existingBlock : 0)
@@ -453,9 +464,19 @@ class PrismaDB {
           }
         });
         return { blockedUntil: blockedUntil.toISOString() };
-      });
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
     } catch (error) {
       if (error.code === 'P2003' || error.code === 'P2025') return null;
+      if (error.code === 'P2034') {
+        const recentReport = await this.client.pmcChatReport.findFirst({
+          where: {
+            reporterId,
+            createdAt: { gte: new Date(Date.now() - CHAT_REPORT_COOLDOWN_MS) }
+          },
+          select: { id: true }
+        });
+        if (recentReport) throw new Error(CHAT_REPORT_COOLDOWN_MESSAGE);
+      }
       throw error;
     }
   }

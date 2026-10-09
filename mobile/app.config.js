@@ -31,6 +31,7 @@ module.exports = ({ config }) => {
             : item
         ))
       }))
-    }
+    },
+    plugins: [...(config.plugins || []), './plugins/withScreenshotProtection']
   };
 };

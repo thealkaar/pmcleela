@@ -114,6 +114,7 @@ model PmcChatReport {
   reporter       PmcUser  @relation("PmcChatReportReporter", fields: [reporterId], references: [id], onDelete: Cascade)
   reportedUser   PmcUser  @relation("PmcChatReportReportedUser", fields: [reportedUserId], references: [id], onDelete: Cascade)
 
+  @@index([reporterId, createdAt(sort: Desc)], map: "pmc_chat_reports_reporter_created_at_idx")
   @@index([reportedUserId, createdAt(sort: Desc)], map: "pmc_chat_reports_reported_user_created_at_idx")
   @@map("pmc_chat_reports")
 }

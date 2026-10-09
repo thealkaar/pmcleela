@@ -773,9 +773,14 @@ app.post('/api/push/unregister', requireStudent, async (req, res) => {
   }
 });
 
-app.get('/api/announcements', async (req, res) => {
+app.get('/api/announcements', requireStudent, async (req, res) => {
   try {
-    res.json({ success: true, data: await db.getAnnouncements() });
+    const accountCreatedAt = Date.parse(req.studentUser.createdAt || '');
+    const announcements = await db.getAnnouncements();
+    const data = Number.isFinite(accountCreatedAt)
+      ? announcements.filter(item => Date.parse(item.createdAt || '') >= accountCreatedAt)
+      : [];
+    res.json({ success: true, data });
   } catch (error) {
     console.error('[Push] Failed to load announcements:', error);
     res.status(500).json({ success: false, message: 'Could not load announcements.' });
@@ -1423,7 +1428,9 @@ app.post('/api/reels/upload', requireStudent, (req, res) => {
         trimEnd,
         cropMode,
         audioUploadId,
-        muteOriginalAudio
+        muteOriginalAudio,
+        audioStart,
+        audioMode
       } = req.body;
       const creatorId = req.studentUser.id;
       const creatorName = req.studentUser.leelaUsername || `Leela_${String(req.studentUser.id).slice(-8)}`;
@@ -1463,6 +1470,28 @@ app.post('/api/reels/upload', requireStudent, (req, res) => {
         error.statusCode = 400;
         throw error;
       }
+      const validAudioModes = ['original', 'music', 'both', 'muted'];
+      if (audioMode && !validAudioModes.includes(audioMode)) {
+        const error = new Error('The selected audio mix is invalid.');
+        error.statusCode = 400;
+        throw error;
+      }
+      const selectedAudioMode = audioMode || (audioUploadId
+        ? muteOriginalAudio === 'true' ? 'music' : 'both'
+        : muteOriginalAudio === 'true' ? 'muted' : 'original');
+      if ((selectedAudioMode === 'music' || selectedAudioMode === 'both') && !soundtrackPath) {
+        const error = new Error('Select a music file before choosing a music audio mix.');
+        error.statusCode = 400;
+        throw error;
+      }
+      const selectedAudioStart = audioStart === undefined || audioStart === ''
+        ? 0
+        : Number(audioStart);
+      if (!Number.isFinite(selectedAudioStart) || selectedAudioStart < 0) {
+        const error = new Error('The selected music range is invalid.');
+        error.statusCode = 400;
+        throw error;
+      }
 
       if (uploadedPath && hasTrimStart && hasTrimEnd) {
         const processedVideo = await trimAndCropVideo(uploadedPath, {
@@ -1470,6 +1499,8 @@ app.post('/api/reels/upload', requireStudent, (req, res) => {
           trimEnd,
           cropMode: cropMode || '9:16',
           audioPath: soundtrackPath,
+          audioStart: selectedAudioStart,
+          audioMode: selectedAudioMode,
           muteOriginalAudio: muteOriginalAudio === 'true'
         });
         if (soundtrackPath) {
@@ -1517,8 +1548,12 @@ app.post('/api/reels/upload', requireStudent, (req, res) => {
         caption: caption || 'Campus vibes on Leela',
         videoUrl,
         videoStorageKey: uploadedStorageKey,
-        audioTitle: audioTitle || 'Original Audio',
-        muteOriginalAudio: muteOriginalAudio === 'true',
+        audioTitle: selectedAudioMode === 'original' || selectedAudioMode === 'muted'
+          ? 'Original Audio'
+          : audioTitle || 'Selected music',
+        audioMode: selectedAudioMode,
+        audioStart: selectedAudioStart,
+        muteOriginalAudio: selectedAudioMode === 'music' || selectedAudioMode === 'muted',
         tags: typeof tags === 'string' ? tags.split(',').map(t => t.trim()) : (tags || ['#PMC', '#MANIT', '#Leela']),
         trimStart: trimStart || 0,
         trimEnd: trimEnd || 0,
