@@ -365,8 +365,8 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
         <View style={styles.gateCard}>
           <View style={styles.gateHeader}>
             <Ionicons name="shield-checkmark" size={36} color="#ec4899" />
-            <Text style={styles.gateTitle}>Campus Code of Conduct</Text>
-            <Text style={styles.gateSubtitle}>MANIT Safety & Privacy Agreement</Text>
+            <Text style={styles.gateTitle}>PMC Code of Conduct</Text>
+            <Text style={styles.gateSubtitle}>Campus Safety & Privacy Agreement</Text>
           </View>
 
           <View style={styles.termsBox}>
@@ -374,7 +374,7 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
               <Ionicons name="ban-outline" size={18} color="#ef4444" style={styles.termIcon} />
               <Text style={styles.termText}>
                 <Text style={styles.termBold}>Zero Nudity Tolerance: </Text>
-                Posting or sharing any sexually explicit, pornographic, or vulgar content is strictly prohibited. Violators face immediate permanent ban and official disciplinary action.
+                Posting or sharing sexually explicit, pornographic, or vulgar content is strictly prohibited. Violators will be permanently banned.
               </Text>
             </View>
 
@@ -382,7 +382,7 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
               <Ionicons name="alert-circle-outline" size={18} color="#f59e0b" style={styles.termIcon} />
               <Text style={styles.termText}>
                 <Text style={styles.termBold}>No Harassment: </Text>
-                Bullying, hate speech, abusive language, stalking, or harassment will lead to immediate expulsion from the platform.
+                Harassment may result in removal from the platform. Female students may report one boy account from PMC chat in any rolling 24-hour period. A reported account is blocked from PMC chat for 48 hours.
               </Text>
             </View>
 
@@ -390,7 +390,15 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
               <Ionicons name="lock-closed-outline" size={18} color="#10b981" style={styles.termIcon} />
               <Text style={styles.termText}>
                 <Text style={styles.termBold}>Privacy & Authenticity: </Text>
-                Your email is used for student authenticity and safety. They are kept private; only your anonymous name is shown to others.
+                Your email is used for student verification and account security; it is not shown to other students. In PMC chat, others see your anonymous name. Chat messages and shared images are completely private and deleted when the chat ends.
+              </Text>
+            </View>
+
+            <View style={styles.termRow}>
+              <Ionicons name="eye-off-outline" size={18} color="#38bdf8" style={styles.termIcon} />
+              <Text style={styles.termText}>
+                <Text style={styles.termBold}>Screen Capture Protection: </Text>
+                App blocks screenshots and screen recordings while PMC Leela is open.
               </Text>
             </View>
           </View>

@@ -255,7 +255,7 @@ function VideoStoryEditor({
     const interval = setInterval(() => {
       const currentTime = Number(player.currentTime);
       if (Number.isFinite(currentTime)) setPlaybackTime(currentTime);
-    }, 50);
+    }, 200);
     return () => clearInterval(interval);
   }, [player, uploading]);
 
@@ -296,7 +296,7 @@ function VideoStoryEditor({
       } catch (error) {
         console.warn('[Reels] Could not keep the music preview in sync:', error.message);
       }
-    }, 100);
+    }, 200);
     return () => clearInterval(interval);
   }, [
     audioMode,
@@ -810,7 +810,7 @@ function ReelItem({
 async function uploadMediaFile(
   url,
   uri,
-  { fields, authToken, onProgress, fieldName, mimeType }
+  { fields, authToken, onProgress, onUploadStarted, fieldName, mimeType }
 ) {
   const parameters = Object.fromEntries(
     Object.entries(fields)
@@ -823,6 +823,7 @@ async function uploadMediaFile(
     let uploadId;
     try {
       uploadId = await BackgroundReelUpload.startUpload(url, uri, parameters, headers, fieldName);
+      onUploadStarted?.();
     } catch (error) {
       console.error('[Reels] Could not start the Android upload service:', error);
       const uploadError = new Error('The upload could not be started.');
@@ -909,6 +910,7 @@ async function uploadMediaFile(
 
   try {
     const uploadPromise = task.uploadAsync();
+    onUploadStarted?.();
     const result = await uploadPromise;
     let response;
     try {
@@ -1417,7 +1419,6 @@ export default function LeelaReelsScreen({
     const shouldUploadMusic = selectedAudio && (audioMode === 'music' || audioMode === 'both');
     try {
       setUploading(true);
-      setStoryEditorVisible(false);
       setUploadProgress(0);
       setUploadPhase(shouldUploadMusic ? 'music' : 'video');
 
@@ -1432,6 +1433,7 @@ export default function LeelaReelsScreen({
           authToken,
           fieldName: 'audio',
           mimeType: selectedAudio.mimeType || 'audio/mpeg',
+          onUploadStarted: () => setStoryEditorVisible(false),
           onProgress: (progress) => setUploadProgress(Math.floor(progress * 0.1))
         });
         stagedAudioId = audioResult.audioUploadId;
@@ -1460,6 +1462,7 @@ export default function LeelaReelsScreen({
           muteOriginalAudio: String(audioMode === 'music' || audioMode === 'muted')
         },
         authToken,
+        onUploadStarted: () => setStoryEditorVisible(false),
         onProgress: (progress) => {
           setUploadPhase(progress >= 99 ? 'processing' : 'video');
           setUploadProgress((shouldUploadMusic ? 10 : 0) + Math.floor(progress * (shouldUploadMusic ? 0.89 : 0.98)));
