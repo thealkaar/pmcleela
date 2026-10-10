@@ -14,6 +14,7 @@ const CHAT_REPORT_COOLDOWN_MESSAGE = 'You can submit only one PMC chat report ev
 const PUSH_TOKENS_FILE = path.join(DATA_DIR, 'push-tokens.json');
 const ANNOUNCEMENTS_FILE = path.join(DATA_DIR, 'announcements.json');
 const APP_RELEASES_FILE = path.join(DATA_DIR, 'app-releases.json');
+const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json');
 
 function readJson(file, defaultValue = []) {
   try {
@@ -51,6 +52,8 @@ class LocalDB {
     this.pushTokens = useLocalFiles ? readJson(PUSH_TOKENS_FILE, []) : [];
     this.announcements = useLocalFiles ? readJson(ANNOUNCEMENTS_FILE, []) : [];
     this.appReleases = useLocalFiles ? readJson(APP_RELEASES_FILE, []) : [];
+    const settings = useLocalFiles ? readJson(SETTINGS_FILE, { notificationsEnabled: true }) : null;
+    this.notificationsEnabled = settings?.notificationsEnabled !== false;
     let usersChanged = false;
     this.users.forEach(user => {
       if (!user.leelaUsername) {
@@ -782,6 +785,20 @@ class LocalDB {
 
   getPushTokens() {
     return this.pushTokens;
+  }
+
+  getNotificationsEnabled() {
+    return this.notificationsEnabled;
+  }
+
+  setNotificationsEnabled(enabled) {
+    const previousValue = this.notificationsEnabled;
+    this.notificationsEnabled = enabled;
+    if (!writeJson(SETTINGS_FILE, { notificationsEnabled: enabled })) {
+      this.notificationsEnabled = previousValue;
+      throw new Error('Could not persist notification settings.');
+    }
+    return this.notificationsEnabled;
   }
 
   removePushTokens(tokens) {

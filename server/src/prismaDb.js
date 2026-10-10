@@ -540,6 +540,21 @@ class PrismaDB {
     await this.client.pmcPushToken.deleteMany({ where: { userId, token } });
   }
 
+  async getNotificationsEnabled() {
+    const settings = await this.client.pmcAppSettings.findUnique({ where: { id: 'global' } });
+    if (!settings) throw new Error('Notification settings are not initialized.');
+    return settings.notificationsEnabled;
+  }
+
+  async setNotificationsEnabled(enabled) {
+    const settings = await this.client.pmcAppSettings.upsert({
+      where: { id: 'global' },
+      create: { id: 'global', notificationsEnabled: enabled },
+      update: { notificationsEnabled: enabled }
+    });
+    return settings.notificationsEnabled;
+  }
+
   async addAnnouncement({ id, title, message }) {
     return this.client.pmcAnnouncement.create({ data: { id, title, message } });
   }

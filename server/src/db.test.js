@@ -36,6 +36,43 @@ test('scholar-number login resolves the account registered with its MANIT email'
   });
 });
 
+test('global notification setting can be enabled and disabled with persistence', () => {
+  const originalWriteFileSync = fs.writeFileSync;
+  const writes = [];
+  fs.writeFileSync = (file, data) => writes.push({ file, data });
+  try {
+    const db = createTestDb();
+    db.notificationsEnabled = true;
+    assert.equal(db.getNotificationsEnabled(), true);
+    assert.equal(db.setNotificationsEnabled(false), false);
+    assert.equal(db.getNotificationsEnabled(), false);
+    assert.deepEqual(JSON.parse(writes[0].data), { notificationsEnabled: false });
+    assert.equal(db.setNotificationsEnabled(true), true);
+    assert.equal(db.getNotificationsEnabled(), true);
+    assert.deepEqual(JSON.parse(writes[1].data), { notificationsEnabled: true });
+  } finally {
+    fs.writeFileSync = originalWriteFileSync;
+  }
+});
+
+test('global notification setting reverts in-memory state when persistence fails', () => {
+  const originalWriteFileSync = fs.writeFileSync;
+  const originalConsoleError = console.error;
+  fs.writeFileSync = () => {
+    throw new Error('disk unavailable');
+  };
+  console.error = () => {};
+  try {
+    const db = createTestDb();
+    db.notificationsEnabled = true;
+    assert.throws(() => db.setNotificationsEnabled(false), /Could not persist notification settings/);
+    assert.equal(db.getNotificationsEnabled(), true);
+  } finally {
+    fs.writeFileSync = originalWriteFileSync;
+    console.error = originalConsoleError;
+  }
+});
+
 test('chat and Leela usernames remain separate and unique', () => {
   const originalWriteFileSync = fs.writeFileSync;
   fs.writeFileSync = () => {};

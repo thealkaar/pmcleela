@@ -9,9 +9,13 @@ function chunks(items, size) {
   return batches;
 }
 
-async function sendPushToAll(tokens, { title, body, data }) {
+async function sendPushToAll(tokens, { title, body, data }, { enabled = true } = {}) {
   const uniqueTokens = [...new Set(tokens.map(item => item.token))];
   const result = { sent: 0, failed: 0, invalidTokens: [], errors: [] };
+  if (!enabled) {
+    result.disabled = true;
+    return result;
+  }
   if (process.env.PMC_LOCAL_MODE === '1') {
     result.failed = uniqueTokens.length;
     if (uniqueTokens.length) result.errors.push('Push notifications are disabled in local development mode.');

@@ -10,6 +10,7 @@ import {
   ScrollView,
   StatusBar,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   TouchableOpacity,
@@ -113,6 +114,8 @@ export default function App() {
   const [deletionRequests, setDeletionRequests] = useState([]);
   const [broadcasts, setBroadcasts] = useState([]);
   const [appReleases, setAppReleases] = useState([]);
+  const [notificationsEnabled, setNotificationsEnabled] = useState(null);
+  const [notificationSettingsBusy, setNotificationSettingsBusy] = useState(false);
   const [reportFilter, setReportFilter] = useState('pending');
   const [reelOwnerFilter, setReelOwnerFilter] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -154,6 +157,9 @@ export default function App() {
       } else if (tab === 'update') {
         const result = await request('/api/admin/app-releases', token);
         setAppReleases(result.data);
+      } else if (tab === 'notifications') {
+        const result = await request('/api/admin/notification-settings', token);
+        setNotificationsEnabled(result.data.enabled);
       } else if (tab === 'account-deletions') {
         const result = await request('/api/admin/account-deletion-requests', token);
         setDeletionRequests(result.data);
@@ -243,6 +249,27 @@ export default function App() {
     }
   };
 
+  const updateNotificationsEnabled = async enabled => {
+    setNotificationSettingsBusy(true);
+    try {
+      const result = await request('/api/admin/notification-settings', token, {
+        method: 'PATCH',
+        body: JSON.stringify({ enabled })
+      });
+      setNotificationsEnabled(result.data.enabled);
+      Alert.alert(
+        result.data.enabled ? 'Notifications enabled' : 'Notifications paused',
+        result.data.enabled
+          ? 'Push alerts and new in-app notifications will be sent again.'
+          : 'Push alerts and new in-app notifications for reels, broadcasts, and app updates are paused.'
+      );
+    } catch (error) {
+      Alert.alert('Could not update notifications', error.message);
+    } finally {
+      setNotificationSettingsBusy(false);
+    }
+  };
+
   const deleteBroadcast = (broadcast) => {
     Alert.alert(
       'Delete notification permanently?',
@@ -309,7 +336,9 @@ export default function App() {
       setReleaseNotes('');
       Alert.alert(
         'Update published',
-        `Version ${result.data.versionName} is available in the student app. Expo accepted ${result.delivery.sent} of ${result.delivery.registeredDevices} registered-device notifications. Students can also find the update in Me.${result.delivery.errors?.[0] ? `\n${result.delivery.errors[0]}` : ''}`
+        result.delivery.disabled
+          ? `Version ${result.data.versionName} is available in the student app, but notifications were paused before the alert could be sent. Students can find the update in Me.`
+          : `Version ${result.data.versionName} is available in the student app. Expo accepted ${result.delivery.sent} of ${result.delivery.registeredDevices} registered-device notifications. Students can also find the update in Me.${result.delivery.errors?.[0] ? `\n${result.delivery.errors[0]}` : ''}`
       );
     } catch (error) {
       Alert.alert('Could not publish update', error.message);
@@ -424,6 +453,7 @@ export default function App() {
 
   const data = useMemo(() => {
     if (tab === 'users') return users;
+    if (tab === 'notifications') return [];
     if (tab === 'reels') {
       return reelOwnerFilter
         ? reels.filter(reel => reel.creatorId === reelOwnerFilter.id)
@@ -655,6 +685,37 @@ export default function App() {
     </View>
   );
 
+  const renderNotificationSettings = () => (
+    <View style={styles.composerCard}>
+      <View style={styles.notificationSettingRow}>
+        <View style={styles.notificationSettingCopy}>
+          <Text style={styles.composerTitle}>Global notifications</Text>
+          <Text style={styles.composerHint}>
+            {notificationsEnabled === null
+              ? 'Loading the current setting…'
+              : notificationsEnabled
+                ? 'Enabled: students receive push alerts and new in-app notification entries.'
+                : 'Paused: no new push alerts or in-app notification entries are created.'}
+          </Text>
+        </View>
+        <Switch
+          accessibilityLabel="Enable notifications for all students"
+          value={notificationsEnabled === true}
+          onValueChange={updateNotificationsEnabled}
+          disabled={notificationsEnabled === null || notificationSettingsBusy}
+          trackColor={{ false: '#374151', true: '#9d174d' }}
+          thumbColor={notificationsEnabled ? '#f9a8d4' : '#d1d5db'}
+        />
+      </View>
+      {notificationSettingsBusy ? (
+        <ActivityIndicator style={styles.notificationSettingsLoader} color="#ec4899" />
+      ) : null}
+      <Text style={styles.notificationSettingsNote}>
+        Reel uploads and app releases remain available while notifications are paused. Broadcasts cannot be sent until notifications are enabled.
+      </Text>
+    </View>
+  );
+
   const renderReleaseComposer = () => (
     <View style={styles.composerCard}>
       <Text style={styles.composerTitle}>Publish a student-app update</Text>
@@ -737,6 +798,7 @@ export default function App() {
           { id: 'account-deletions', title: 'Deletion requests', icon: 'person-remove-outline', count: deletionRequests.length },
           { id: 'users', title: 'Users', icon: 'people-outline', count: users.length },
           { id: 'reels', title: 'Reels', icon: 'play-circle-outline', count: reels.length },
+          { id: 'notifications', title: 'Notifications', icon: 'notifications-outline' },
           { id: 'broadcast', title: 'Broadcast', icon: 'megaphone-outline', count: broadcasts.length },
           { id: 'update', title: 'App update', icon: 'cloud-upload-outline', count: appReleases.length }
         ].map(item => (
@@ -760,6 +822,8 @@ export default function App() {
               ? 'Student accounts'
               : tab === 'reels'
                 ? reelOwnerFilter ? `Reels · ${reelOwnerFilter.name}` : 'All reels'
+                : tab === 'notifications'
+                  ? 'Notification settings'
                 : tab === 'broadcast'
                   ? 'Broadcast messages'
                   : tab === 'update'
@@ -773,6 +837,8 @@ export default function App() {
               ? 'Review reports and moderate campus content.'
               : tab === 'broadcast'
                 ? 'Send a push notification to registered devices.'
+                : tab === 'notifications'
+                  ? 'Control push alerts and in-app notifications for every student.'
                 : tab === 'update'
                   ? 'Upload and announce a signed Android APK.'
                   : 'Private administrator view'}
@@ -828,7 +894,8 @@ export default function App() {
                     : renderRelease
           }
           ListHeaderComponent={
-            tab === 'broadcast' ? renderBroadcastComposer()
+            tab === 'notifications' ? renderNotificationSettings()
+              : tab === 'broadcast' ? renderBroadcastComposer()
               : tab === 'update' ? renderReleaseComposer()
                 : null
           }
@@ -836,6 +903,7 @@ export default function App() {
           refreshing={loading}
           onRefresh={loadTab}
           ListEmptyComponent={
+            tab === 'notifications' ? null :
             <View style={styles.emptyState}>
               <Ionicons
                 name={
@@ -1037,6 +1105,10 @@ const styles = StyleSheet.create({
   },
   composerTitle: { color: '#f1f4fa', fontSize: 15, fontWeight: '700' },
   composerHint: { color: '#929bad', fontSize: 11, lineHeight: 16, marginTop: 5, marginBottom: 14 },
+  notificationSettingRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  notificationSettingCopy: { flex: 1 },
+  notificationSettingsLoader: { marginTop: 14, alignSelf: 'flex-start' },
+  notificationSettingsNote: { color: '#929bad', fontSize: 11, lineHeight: 16, marginTop: 10 },
   messageInput: { minHeight: 88, textAlignVertical: 'top', paddingTop: 12 },
   announcementMessage: { color: '#c1c5d0', fontSize: 12, lineHeight: 18, marginTop: 8 },
   broadcastHistoryCard: { padding: 15 },

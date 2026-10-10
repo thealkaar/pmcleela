@@ -103,7 +103,8 @@ function VideoStoryEditor({
   uploading,
   uploadProgress,
   onClose,
-  onPublish
+  onPublish,
+  onEnsureVisible
 }) {
   const [trimStart, setTrimStart] = useState(0);
   const [trimEnd, setTrimEnd] = useState(0);
@@ -167,7 +168,6 @@ function VideoStoryEditor({
     return () => {
       sourceSubscription.remove();
       statusSubscription.remove();
-      audioPlayer.pause();
     };
   }, [audioPlayer, selectedAudio]);
 
@@ -181,9 +181,10 @@ function VideoStoryEditor({
   useEffect(() => {
     if (uploading) {
       audioPlayer.pause();
+      player.pause();
       setIsPreviewingMix(false);
     }
-  }, [audioPlayer, uploading]);
+  }, [audioPlayer, player, uploading]);
 
   useEffect(() => {
     if (!player) return;
@@ -338,6 +339,7 @@ function VideoStoryEditor({
         copyToCacheDirectory: true,
         multiple: false
       });
+      onEnsureVisible?.();
       if (result.canceled) return;
 
       const audio = result.assets?.[0];
@@ -356,6 +358,7 @@ function VideoStoryEditor({
       setSelectedAudio(audio);
       setAudioMode('both');
     } catch (error) {
+      onEnsureVisible?.();
       console.error('[Reels] Could not open the device music picker:', error);
       Alert.alert('Music Picker Error', 'Could not open music files. Please try again.');
     }
@@ -425,7 +428,12 @@ function VideoStoryEditor({
 
       {/* Top Navigation & Tools Bar */}
       <View style={styles.storyTopBar}>
-        <TouchableOpacity style={styles.storyIconBtn} onPress={onClose} activeOpacity={0.8}>
+        <TouchableOpacity
+          style={styles.storyIconBtn}
+          onPress={onClose}
+          disabled={uploading}
+          activeOpacity={0.8}
+        >
           <Ionicons name="close" size={26} color="#ffffff" />
         </TouchableOpacity>
 
@@ -822,7 +830,7 @@ function ReelItem({
 async function uploadMediaFile(
   url,
   uri,
-  { fields, authToken, onProgress, onUploadStarted, fieldName, mimeType, useBackgroundUploader = true }
+  { fields, authToken, onProgress, fieldName, mimeType, useBackgroundUploader = true }
 ) {
   const parameters = Object.fromEntries(
     Object.entries(fields)
@@ -835,7 +843,6 @@ async function uploadMediaFile(
     let uploadId;
     try {
       uploadId = await BackgroundReelUpload.startUpload(url, uri, parameters, headers, fieldName);
-      onUploadStarted?.();
     } catch (error) {
       console.error('[Reels] Could not start the Android upload service:', error);
       const uploadError = new Error(error?.message || 'The upload could not be started.');
@@ -931,7 +938,6 @@ async function uploadMediaFile(
 
   try {
     const uploadPromise = task.uploadAsync();
-    onUploadStarted?.();
     const result = await uploadPromise;
     let response;
     try {
@@ -992,7 +998,7 @@ function getPublishErrorMessage(error) {
   if (error?.code === 'UPLOAD_NETWORK_ERROR' && error.message) {
     return `The upload connection failed: ${error.message}`;
   }
-  return 'The upload could not finish. Check your connection and try again; your reel edits are still here.';
+  return 'The upload could not finish. Check your connection, then select your video and music again to retry.';
 }
 
 export default function LeelaReelsScreen({
@@ -1001,7 +1007,8 @@ export default function LeelaReelsScreen({
   authToken,
   isTabActive = true,
   reelIdToOpen = null,
-  onReelOpened
+  onReelOpened,
+  onEnsureVisible
 }) {
   const insets = useSafeAreaInsets();
   const [reels, setReels] = useState([]);
@@ -1035,6 +1042,7 @@ export default function LeelaReelsScreen({
   const [pickerModalVisible, setPickerModalVisible] = useState(false);
   const [storyEditorVisible, setStoryEditorVisible] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const uploadInProgressRef = useRef(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadPhase, setUploadPhase] = useState('video');
   const [selectedVideoUri, setSelectedVideoUri] = useState(null);
@@ -1480,17 +1488,20 @@ export default function LeelaReelsScreen({
     cropMode,
     audioMode
   }) => {
+    if (uploadInProgressRef.current) return;
     if (!selectedVideoUri) {
       Alert.alert('No Video', 'Please select a video file first.');
       return;
     }
 
+    uploadInProgressRef.current = true;
     let stagedAudioId = null;
     const shouldUploadMusic = selectedAudio && (audioMode === 'music' || audioMode === 'both');
     try {
       setUploading(true);
       setUploadProgress(0);
       setUploadPhase(shouldUploadMusic ? 'music' : 'video');
+      setStoryEditorVisible(false);
 
       const reelCaption = caption?.trim() || 'Campus vibes on Leela';
       const uploadUrl = `${getBaseUrl(serverHost)}/api/reels/upload`;
@@ -1503,8 +1514,6 @@ export default function LeelaReelsScreen({
           authToken,
           fieldName: 'audio',
           mimeType: selectedAudio.mimeType || 'audio/mpeg',
-          useBackgroundUploader: false,
-          onUploadStarted: () => setStoryEditorVisible(false),
           onProgress: (progress) => setUploadProgress(Math.floor(progress * 0.1))
         });
         stagedAudioId = audioResult.audioUploadId;
@@ -1533,8 +1542,6 @@ export default function LeelaReelsScreen({
           muteOriginalAudio: String(audioMode === 'music' || audioMode === 'muted')
         },
         authToken,
-        useBackgroundUploader: !shouldUploadMusic,
-        onUploadStarted: () => setStoryEditorVisible(false),
         onProgress: (progress) => {
           setUploadPhase(progress >= 99 ? 'processing' : 'video');
           setUploadProgress((shouldUploadMusic ? 10 : 0) + Math.floor(progress * (shouldUploadMusic ? 0.89 : 0.98)));
@@ -1544,6 +1551,7 @@ export default function LeelaReelsScreen({
 
       if (uploadResult && uploadResult.success) {
         setUploadProgress(100);
+        setStoryEditorVisible(false);
         // Fetch all reels from server to display permanently
         await fetchReels({ waitForServer: false });
         setSelectedVideoUri(null);
@@ -1570,10 +1578,10 @@ export default function LeelaReelsScreen({
         }
       }
       if (isTabActiveRef.current) {
-        setStoryEditorVisible(true);
         Alert.alert('Could Not Publish Reel', getPublishErrorMessage(err));
       }
     } finally {
+      uploadInProgressRef.current = false;
       setUploading(false);
       setUploadPhase('video');
     }
@@ -1888,7 +1896,9 @@ export default function LeelaReelsScreen({
       <Modal
         visible={storyEditorVisible && !!selectedVideoUri}
         animationType="slide"
-        onRequestClose={() => setStoryEditorVisible(false)}
+        onRequestClose={() => {
+          if (!uploading) setStoryEditorVisible(false);
+        }}
       >
         {selectedVideoUri && (
           <VideoStoryEditor
@@ -1901,6 +1911,7 @@ export default function LeelaReelsScreen({
               setSelectedVideoUri(null);
             }}
             onPublish={handlePublishReel}
+            onEnsureVisible={onEnsureVisible}
           />
         )}
       </Modal>

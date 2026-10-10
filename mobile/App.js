@@ -191,6 +191,10 @@ function AppContent() {
     setCurrentTab('leela');
   }, []);
 
+  const ensureLeelaIsVisible = React.useCallback(() => {
+    setCurrentTab('leela');
+  }, []);
+
   const switchTab = (tab) => {
     if (tab === currentTab) return;
     const transitionId = ++tabTransitionId.current;
@@ -478,6 +482,7 @@ function AppContent() {
             isTabActive={currentTab === 'leela'}
             reelIdToOpen={pendingReelId}
             onReelOpened={handleReelOpened}
+            onEnsureVisible={ensureLeelaIsVisible}
           />
         </View>
 

@@ -519,6 +519,29 @@ io.on('connection', (socket) => {
 
 app.post('/api/admin/login', loginAdmin);
 
+app.get('/api/admin/notification-settings', requireAdmin, async (req, res) => {
+  try {
+    res.json({ success: true, data: { enabled: await db.getNotificationsEnabled() } });
+  } catch (error) {
+    console.error('[Admin] Failed to load notification settings:', error);
+    res.status(500).json({ success: false, message: 'Could not load notification settings.' });
+  }
+});
+
+app.patch('/api/admin/notification-settings', requireAdmin, async (req, res) => {
+  try {
+    if (typeof req.body?.enabled !== 'boolean') {
+      return res.status(400).json({ success: false, message: 'Notification setting must be enabled or disabled.' });
+    }
+    const enabled = await db.setNotificationsEnabled(req.body.enabled);
+    console.info(`[Admin] Global notifications ${enabled ? 'enabled' : 'disabled'}.`);
+    res.json({ success: true, data: { enabled } });
+  } catch (error) {
+    console.error('[Admin] Failed to update notification settings:', error);
+    res.status(500).json({ success: false, message: 'Could not update notification settings.' });
+  }
+});
+
 app.get('/api/admin/users', requireAdmin, async (req, res) => {
   try {
     const [users, reels] = await Promise.all([db.getUsers(), db.getReels()]);
@@ -716,6 +739,12 @@ app.get('/api/admin/announcements', requireAdmin, async (req, res) => {
 
 app.post('/api/admin/announcements', requireAdmin, async (req, res) => {
   try {
+    if (!await db.getNotificationsEnabled()) {
+      return res.status(409).json({
+        success: false,
+        message: 'Notifications are turned off. Turn them on in the Notifications tab before sending a broadcast.'
+      });
+    }
     const title = typeof req.body?.title === 'string' ? req.body.title.trim() : '';
     const message = typeof req.body?.message === 'string' ? req.body.message.trim() : '';
     if (!title || title.length > 80 || !message || message.length > 500) {
@@ -738,7 +767,24 @@ app.post('/api/admin/announcements', requireAdmin, async (req, res) => {
         title,
         body: message,
         data: { type: 'announcement', announcementId: announcement.id }
-      });
+      }, { enabled: await db.getNotificationsEnabled() });
+      if (delivery.disabled) {
+        try {
+          if (!await db.deleteAnnouncement(announcement.id)) {
+            throw new Error('The notification entry was not found.');
+          }
+        } catch (cleanupError) {
+          console.error(`[Admin] Could not remove paused broadcast ${announcement.id}:`, cleanupError);
+          return res.status(500).json({
+            success: false,
+            message: 'Notifications were paused during delivery, and the broadcast could not be removed.'
+          });
+        }
+        return res.status(409).json({
+          success: false,
+          message: 'Notifications were turned off before delivery. The broadcast was not published.'
+        });
+      }
       if (delivery.invalidTokens.length) {
         await db.removePushTokens(delivery.invalidTokens);
       }
@@ -755,7 +801,8 @@ app.post('/api/admin/announcements', requireAdmin, async (req, res) => {
         registeredDevices: new Set(tokens.map(item => item.token)).size,
         sent: delivery.sent,
         failed: delivery.failed,
-        errors: delivery.errors
+        errors: delivery.errors,
+        disabled: Boolean(delivery.disabled)
       }
     });
   } catch (error) {
@@ -904,7 +951,7 @@ app.post('/api/admin/app-releases', requireAdmin, (req, res) => {
           title: 'PMC Leela update available',
           body: `Version ${versionName} is ready. Open Me in the app to install it.`,
           data: { type: 'app-update', versionCode }
-        });
+        }, { enabled: await db.getNotificationsEnabled() });
         if (delivery.invalidTokens.length) {
           await db.removePushTokens(delivery.invalidTokens);
         }
@@ -922,7 +969,8 @@ app.post('/api/admin/app-releases', requireAdmin, (req, res) => {
           registeredDevices: new Set(pushTokens.map(item => item.token)).size,
           sent: delivery.sent,
           failed: delivery.failed,
-          errors: delivery.errors
+          errors: delivery.errors,
+          disabled: Boolean(delivery.disabled)
         }
       });
     } catch (error) {
@@ -1597,19 +1645,29 @@ app.post('/api/reels/upload', requireStudent, (req, res) => {
         cropMode: cropMode || '9:16'
       });
 
-      const announcementId = `reel_${newReel.id}`;
       const reelCaption = newReel.caption || 'A new campus reel is available.';
       let notificationCreatorName = newReel.creatorName || 'A student';
+      let notificationsEnabled = false;
       try {
-        const creator = creatorId ? await db.findUserById(creatorId) : null;
-        notificationCreatorName = creator?.leelaUsername || notificationCreatorName;
-        await db.addAnnouncement({
-          id: announcementId,
-          title: `New reel by ${notificationCreatorName}`,
-          message: reelCaption
-        });
+        notificationsEnabled = await db.getNotificationsEnabled();
       } catch (notificationError) {
-        console.error(`[Push] Reel ${newReel.id} was published, but its notification could not be saved:`, notificationError);
+        console.error(`[Push] Reel ${newReel.id} was published, but notification settings could not be loaded:`, notificationError);
+      }
+      const reelAnnouncementId = `reel_${newReel.id}`;
+      let reelAnnouncementSaved = false;
+      if (notificationsEnabled) {
+        try {
+          const creator = creatorId ? await db.findUserById(creatorId) : null;
+          notificationCreatorName = creator?.leelaUsername || notificationCreatorName;
+          await db.addAnnouncement({
+            id: reelAnnouncementId,
+            title: `New reel by ${notificationCreatorName}`,
+            message: reelCaption
+          });
+          reelAnnouncementSaved = true;
+        } catch (notificationError) {
+          console.error(`[Push] Reel ${newReel.id} was published, but its notification could not be saved:`, notificationError);
+        }
       }
 
       try {
@@ -1618,7 +1676,16 @@ app.post('/api/reels/upload', requireStudent, (req, res) => {
           title: 'New reel on Leela',
           body: `${notificationCreatorName}: ${reelCaption}`.slice(0, 180),
           data: { type: 'reel', reelId: newReel.id }
-        });
+        }, { enabled: await db.getNotificationsEnabled() });
+        if (delivery.disabled && reelAnnouncementSaved) {
+          try {
+            if (!await db.deleteAnnouncement(reelAnnouncementId)) {
+              throw new Error('The notification entry was not found.');
+            }
+          } catch (cleanupError) {
+            console.error(`[Push] Could not remove paused reel notification ${reelAnnouncementId}:`, cleanupError);
+          }
+        }
         if (delivery.invalidTokens.length) {
           await db.removePushTokens(delivery.invalidTokens);
         }

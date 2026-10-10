@@ -151,3 +151,10 @@ model PmcAppRelease {
 
   @@map("pmc_app_releases")
 }
+
+model PmcAppSettings {
+  id                   String  @id
+  notificationsEnabled Boolean @default(true) @map("notifications_enabled")
+
+  @@map("pmc_app_settings")
+}
