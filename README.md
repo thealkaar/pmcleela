@@ -3,22 +3,24 @@
 
 **PMC लीला** is a mobile application built with **React Native (Expo)** and **Node.js / Socket.io**, designed around MANIT campus culture.
 
+See [Safety & Privacy](./SAFETY-AND-PRIVACY.md) for what anonymity means in PMC chat, the protections in the app, and their limitations.
+
 ---
 
 ## 🏛️ Features Overview
 
-### 1. ❤️ Piya Milan Chauraha (PMC) — 1-on-1 Ephemeral Random Chat
-* **The Concept:** Named after MANIT's iconic meeting landmark—Piya Milan Chauraha. Two verified students online search and get instantly paired into a private room.
+### 1. ❤️ Piya Milan Chauraha (PMC) — 1-on-1 Pseudonymous Chat
+* **The Concept:** Named after MANIT's iconic meeting landmark—Piya Milan Chauraha. Verified students can get paired for a one-to-one live conversation. Chat partners see each other's chosen PMC chat name, gender, and academic year—not registered email addresses or scholar numbers in the chat interface. This is pseudonymity between chat partners, not anonymity from the service.
 * **WhatsApp / Instagram Style Messaging:**
   * Rich text messaging with timestamps and double ticks (`✓✓`).
   * Instant photo sharing directly from phone gallery / camera.
   * Real-time typing indicators (*"Hostel 4 Maggi Chef is typing..."*).
   * Campus-themed pseudonyms (*PMC Chai Lover*, *SAC Rockstar*, *Nescafe Philosopher*, *Hostel 7 Phantom*).
-* **🔥 Strict 1-Time Session (Burn Upon Exit):**
+* **🔥 Ephemeral Chat Session:**
   * Once either student taps **"Agla / Next"**, **"End Chat"**, or disconnects:
-  * **All messages and shared images are immediately and permanently wiped** from memory.
-  * Zero logs or history are preserved.
-  * Both students return to the anonymous stranger pool with new random aliases.
+  * The backend removes the active room state from its running memory. Chat text and images are not written to a persistent chat-history database by the current app backend.
+  * This does not erase copies a participant may make, guarantee immediate removal of every technical log or backup, or make the conversation end-to-end encrypted.
+  * Students return to the matching pool using their chosen PMC chat names.
 
 ### 2. 🎬 Leela — Campus Video Reels
 * **The Concept:** Vertical short-form campus video feed showcasing fest highlights (Maffick, Technosearch), hostel life banter, dance rehearsals, and comedy.
@@ -34,12 +36,12 @@
 
 Female students can report one account from PMC chat in any rolling 24-hour period. A reported account is blocked from PMC chat for 48 hours; Leela and other account features remain available.
 
-Android prevents screenshots and screen recordings while PMC Leela is open. iOS does not provide an API for apps to prevent screenshots.
+Android uses secure-window protection against ordinary screenshots and screen recordings in the app; it cannot prevent recording with another device. iOS does not provide a reliable API for apps to prevent screenshots.
 
 Students can request account deletion from **Me → Settings**. The account stays active while the request is pending; PMC admins can approve immediate deletion or reject it, and unresolved requests are automatically deleted after 24 hours. The verified email's original gender remains locked after deletion to prevent re-registration with a different gender.
 
 ### 3. 🛡️ MANIT Campus Pass & Student Verification
-* Restricted access using `@manit.ac.in` domain emails to keep the community safe, genuine, and exclusive to campus students while keeping all chats anonymous.
+* Registration uses the configured MANIT student-email verification flow. Account email and scholar-number information are not shown in the PMC chat interface, but the service can associate verified accounts with their chat names.
 
 ---
 

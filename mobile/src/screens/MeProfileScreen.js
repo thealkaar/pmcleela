@@ -1077,7 +1077,7 @@ export default function MeProfileScreen({
                 <Text style={styles.modalRuleTitle}>Protect personal information</Text>
               </View>
               <Text style={styles.modalRuleText}>
-                Your scholar email is kept private and is never revealed to other students.
+                Your scholar_no is kept private and is never revealed to other students.
               </Text>
             </ScrollView>
 

@@ -93,8 +93,12 @@ test('targeted searches connect the requester to an online user by anonymous nam
   assert.equal(matchmaker.userRooms.get(requester.id).partnerId, target.id);
   assert.equal(matchmaker.userRooms.get(target.id).partnerId, requester.id);
   assert.equal(matchmaker.waitingQueue.length, 0);
-  assert.equal(requesterEvents.find(event => event.event === 'matched').data.partnerAlias, 'Library Night Owl');
-  assert.equal(targetEvents.find(event => event.event === 'matched').data.partnerAlias, 'PMC Regular');
+  const requesterMatch = requesterEvents.find(event => event.event === 'matched').data;
+  const targetMatch = targetEvents.find(event => event.event === 'matched').data;
+  assert.equal(requesterMatch.partnerAlias, 'Library Night Owl');
+  assert.equal(targetMatch.partnerAlias, 'PMC Regular');
+  assert.equal('partnerUserId' in requesterMatch, false);
+  assert.equal('partnerUserId' in targetMatch, false);
 });
 
 test('targeted searches distinguish offline, busy, and self accounts', () => {

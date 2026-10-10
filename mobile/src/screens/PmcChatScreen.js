@@ -874,10 +874,10 @@ export default function PmcChatScreen({ serverHost, currentUser, authToken, isKe
         </View>
       </View>
 
-      {/* Burn Guarantee Ribbon (No emojis) */}
+      {/* Chat privacy reminder */}
       <View style={styles.burnRibbon}>
         <Text style={styles.burnRibbonText}>
-          One-time chat: All messages and photos are permanently wiped on exit
+          Chat is not saved as history by PMC Leela. Participants may save what they see.
         </Text>
       </View>
 

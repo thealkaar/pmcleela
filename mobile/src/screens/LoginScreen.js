@@ -28,7 +28,14 @@ const SUGGESTED_PERSONAS = [
   'Neelam Paglu',
   'Babita',
   'OG',
-  'CodingNinja'
+  'CodingNinja',
+  'Papa ki pari',
+  'Patrik Jane',
+  'Thomas Shelby',
+  'Sabki behen',
+  'Mommy boy',
+  'Bachpan se ___',
+  'Sec C'
 ];
 
 export default function LoginScreen({ serverHost, onLoginSuccess }) {
@@ -391,7 +398,7 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
               <Ionicons name="lock-closed-outline" size={18} color="#10b981" style={styles.termIcon} />
               <Text style={styles.termText}>
                 <Text style={styles.termBold}>Privacy & Authenticity: </Text>
-                Your email is used for student verification and account security; it is not shown to other students. In PMC chat, others see your anonymous name. Chat messages and shared images are completely private and deleted when the chat ends.
+                Your MANIT email and scholar number verify your account and are not shown in the PMC chat. Chat partners see your chosen chat name, gender, and academic year. Messages and images are relayed live, not saved as chat history by the app, and may still be copied or captured by a participant.
               </Text>
             </View>
 
@@ -399,7 +406,7 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
               <Ionicons name="eye-off-outline" size={18} color="#38bdf8" style={styles.termIcon} />
               <Text style={styles.termText}>
                 <Text style={styles.termBold}>Screen Capture Protection: </Text>
-                App blocks screenshots and screen recordings while PMC Leela is open.
+                Android blocks ordinary screenshots and screen recordings while the app is open. iOS cannot reliably block screenshots; no app can prevent someone from using another device to record the screen.
               </Text>
             </View>
           </View>
@@ -783,14 +790,14 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
             {/* Anonymous Persona Name */}
             <View style={styles.inputGroup}>
               <View style={styles.labelRow}>
-                <Text style={styles.inputLabel}>Anonymous Name</Text>
+                <Text style={styles.inputLabel}>PMC Chat Name</Text>
                 <TouchableOpacity onPress={handleRandomizePersona}>
                   <Text style={styles.randomBtn}>🎲 Suggest</Text>
                 </TouchableOpacity>
               </View>
               <TextInput
                 style={styles.inputField}
-                placeholder="Choose your anonymous name"
+                placeholder="Choose your PMC chat name"
                 placeholderTextColor="#64748b"
                 value={anonymousName}
                 onChangeText={setAnonymousName}
@@ -801,7 +808,7 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
             <View style={styles.privacyBox}>
               <Ionicons name="lock-closed" size={14} color="#10b981" />
               <Text style={styles.privacyText}>
-                Your scholar number is for verification that you are Manit Student. Only your anonymous name is shown to other students.
+                Your MANIT email verifies your account. Chat partners see your PMC chat name, gender, and academic year. Leela posts use your separate Leela username.
               </Text>
             </View>
 

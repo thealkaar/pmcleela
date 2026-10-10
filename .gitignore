@@ -32,6 +32,7 @@ mobile/android/
 mobile/ios/
 pmc-admin/android/
 pmc-admin/ios/
+/mobile/modules/background-reel-upload/android/build/
 *.apk
 *.aab
 *.ipa

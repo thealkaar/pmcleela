@@ -822,7 +822,7 @@ function ReelItem({
 async function uploadMediaFile(
   url,
   uri,
-  { fields, authToken, onProgress, onUploadStarted, fieldName, mimeType }
+  { fields, authToken, onProgress, onUploadStarted, fieldName, mimeType, useBackgroundUploader = true }
 ) {
   const parameters = Object.fromEntries(
     Object.entries(fields)
@@ -831,7 +831,7 @@ async function uploadMediaFile(
   );
   const headers = { Authorization: `Bearer ${authToken}` };
 
-  if (Platform.OS === 'android' && BackgroundReelUpload) {
+  if (Platform.OS === 'android' && BackgroundReelUpload && useBackgroundUploader) {
     let uploadId;
     try {
       uploadId = await BackgroundReelUpload.startUpload(url, uri, parameters, headers, fieldName);
@@ -1503,6 +1503,7 @@ export default function LeelaReelsScreen({
           authToken,
           fieldName: 'audio',
           mimeType: selectedAudio.mimeType || 'audio/mpeg',
+          useBackgroundUploader: false,
           onUploadStarted: () => setStoryEditorVisible(false),
           onProgress: (progress) => setUploadProgress(Math.floor(progress * 0.1))
         });
@@ -1532,6 +1533,7 @@ export default function LeelaReelsScreen({
           muteOriginalAudio: String(audioMode === 'music' || audioMode === 'muted')
         },
         authToken,
+        useBackgroundUploader: !shouldUploadMusic,
         onUploadStarted: () => setStoryEditorVisible(false),
         onProgress: (progress) => {
           setUploadPhase(progress >= 99 ? 'processing' : 'video');

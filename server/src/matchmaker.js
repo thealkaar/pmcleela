@@ -3,25 +3,25 @@ const { v4: uuidv4 } = require('uuid');
 // Clean, authentic campus pseudonyms without any emojis
 const MANIT_ALIASES = [
   'PMC Regular',
-  'Hostel 4 Senior',
-  'SAC Member',
-  'Hostel 7 Scholar',
-  'Nescafe Reader',
+  'Senior',
+  'Sec C Boy',
+  'Hostel 7 wali behen',
+  'Nescafe chalein',
   'Library Night Owl',
-  'Roller Senior',
-  'Energy Center Student',
-  'Technosearch Coder',
-  'Amul Parlour Visitor',
-  'Hostel 10 Scholar',
-  'Hostel 8 Cricketer',
-  'Hostel 3 Writer',
+  'Laddoo',
+  'Papa ko pari',
+  'The coding paglu',
+  'Top N Town',
+  'Apki Dost',
+  'Cricketer',
+  'Virat Kohli',
   'PMC Walker',
-  'Campus Wanderer',
-  'Hostel 1 Senior',
-  'Hostel 6 Scholar',
-  'Architecture Dept Senior',
-  'Sports Complex Runner',
-  'Maa Saraswati Temple Visitor'
+  'Wanderer',
+  'Hostel ka chora',
+  'Hariyanvi',
+  'Architecture wala',
+  'Khiladi',
+  'Mommy boy'
 ];
 
 function getRandomAlias(exclude = null) {
@@ -367,7 +367,6 @@ class Matchmaker {
       partnerAcademicYear: user2.academicYear || 'Student',
       yourGender: user1.gender,
       partnerGender: user2.gender,
-      partnerUserId: user2.socket.data.userId,
       partnerStatus: 'Online'
     });
 
@@ -379,7 +378,6 @@ class Matchmaker {
       partnerAcademicYear: user1.academicYear || 'Student',
       yourGender: user2.gender,
       partnerGender: user1.gender,
-      partnerUserId: user1.socket.data.userId,
       partnerStatus: 'Online'
     });
 
