@@ -7,6 +7,7 @@ import {
   TextInput,
   TouchableOpacity,
   FlatList,
+  ScrollView,
   Image,
   KeyboardAvoidingView,
   Platform,
@@ -19,6 +20,7 @@ import {
 import io from 'socket.io-client';
 import * as ImagePicker from 'expo-image-picker';
 import { Ionicons } from '@expo/vector-icons';
+import Svg, { Circle, Path } from 'react-native-svg';
 import CoupleLogo from '../components/CoupleLogo';
 import { getSocketUrl } from '../config';
 
@@ -40,6 +42,19 @@ const formatYearShort = (val) => {
   return val;
 };
 
+function OfflineEmoji({ gender }) {
+  const accent = gender === 'female' ? '#f472b6' : '#60a5fa';
+  return (
+    <Svg width={52} height={52} viewBox="0 0 52 52" accessibilityLabel="Sad face illustration">
+      <Circle cx="26" cy="26" r="24" fill="#111827" stroke={accent} strokeOpacity="0.4" strokeWidth="1.5" />
+      <Circle cx="26" cy="25" r="16" fill="#f6d5b8" />
+      <Path d="M20 23h.1M32 23h.1" stroke="#40312e" strokeLinecap="round" strokeWidth="3" />
+      <Path d="M21 33c2-4 8-4 10 0" fill="none" stroke="#8f5c55" strokeLinecap="round" strokeWidth="2" />
+      <Path d="M36 9l2 4-4 2" fill="none" stroke={accent} strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+    </Svg>
+  );
+}
+
 export default function PmcChatScreen({ serverHost, currentUser, authToken, isKeyboardVisible, onActiveChatChange }) {
   // Session States: 'idle' | 'waiting' | 'chatting' | 'ended'
   const [chatState, setChatState] = useState('idle');
@@ -57,6 +72,10 @@ export default function PmcChatScreen({ serverHost, currentUser, authToken, isKe
   const [onlineCount, setOnlineCount] = useState(0);
   const [fullImageModal, setFullImageModal] = useState(null);
   const [waitingStatusIndex, setWaitingStatusIndex] = useState(0);
+  const [anonymousSearchName, setAnonymousSearchName] = useState('');
+  const [anonymousSearchFeedback, setAnonymousSearchFeedback] = useState(null);
+  const [isSearchingAnonymous, setIsSearchingAnonymous] = useState(false);
+  const [isAnonymousSearchModalVisible, setIsAnonymousSearchModalVisible] = useState(false);
 
   const flatListRef = useRef(null);
   const typingTimeoutRef = useRef(null);
@@ -265,8 +284,18 @@ export default function PmcChatScreen({ serverHost, currentUser, authToken, isKe
       setOnlineCount(Number.isFinite(stats?.totalConnected) ? stats.totalConnected : 0);
     });
 
+    s.on('disconnect', () => {
+      setIsSearchingAnonymous(false);
+    });
+
     s.on('waiting', () => {
+      setIsSearchingAnonymous(false);
       setChatState('waiting');
+    });
+
+    s.on('anonymous_search_result', (result) => {
+      setIsSearchingAnonymous(false);
+      setAnonymousSearchFeedback(result);
     });
 
     s.on('matched', (data) => {
@@ -277,6 +306,9 @@ export default function PmcChatScreen({ serverHost, currentUser, authToken, isKe
         return;
       }
       setMessages([]);
+      setIsAnonymousSearchModalVisible(false);
+      setIsSearchingAnonymous(false);
+      setAnonymousSearchFeedback(null);
       setPartnerAlias(data.partnerAlias);
       setPartnerGender(data.partnerGender === 'female' ? 'female' : 'male');
       setPartnerAcademicYear(data.partnerAcademicYear || '');
@@ -331,6 +363,7 @@ export default function PmcChatScreen({ serverHost, currentUser, authToken, isKe
 
     s.on('chat_access_blocked', (data) => {
       const message = data?.message || 'You have been blocked for two days because a girl reported you.';
+      setIsSearchingAnonymous(false);
       setChatBlockedUntil(data?.blockedUntil || null);
       setMessages([]);
       setPartnerAlias('');
@@ -384,12 +417,34 @@ export default function PmcChatScreen({ serverHost, currentUser, authToken, isKe
       return;
     }
     setMessages([]);
+    setAnonymousSearchFeedback(null);
     socket.emit('search_partner', {
       gender: currentUser?.gender || 'male',
       preferredAlias: currentUser?.anonymousName,
       academicYear: currentUser?.academicYear || 'Student'
     });
     setChatState('waiting');
+  };
+
+  const searchAnonymousUser = () => {
+    if (isSearchingAnonymous) return;
+    const name = anonymousSearchName.trim();
+    if (!name) {
+      setAnonymousSearchFeedback({ status: 'invalid' });
+      return;
+    }
+    if (name.length > 30) {
+      setAnonymousSearchFeedback({ status: 'invalid' });
+      return;
+    }
+    if (!socket?.connected) {
+      setAnonymousSearchFeedback({ status: 'error' });
+      return;
+    }
+
+    setIsSearchingAnonymous(true);
+    setAnonymousSearchFeedback(null);
+    socket.emit('search_anonymous_user', { anonymousName: name });
   };
 
   const handleNext = () => {
@@ -550,7 +605,12 @@ export default function PmcChatScreen({ serverHost, currentUser, authToken, isKe
           <Ionicons name="heart" size={20} color="#f472b6" />
         </Animated.View>
 
-        <View style={styles.lobbyContent}>
+        <ScrollView
+          style={styles.lobbyScroll}
+          contentContainerStyle={[styles.lobbyScrollContent, styles.lobbyContent]}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
           {/* Header Presence Dot */}
           <View style={styles.liveBadge}>
             <View style={styles.onlineDot} />
@@ -565,12 +625,9 @@ export default function PmcChatScreen({ serverHost, currentUser, authToken, isKe
           </View>
 
           {/* Title & Subtitle */}
-          <Text style={styles.titleHindi}></Text>
           <Text style={[styles.titleHindi, { fontSize: 80 }]}>P M C</Text>
 
-          <Text style={styles.titleHindi}></Text>
           <Text style={styles.luxurySubtitle}>Piya Milan Chauraha </Text>
-          {/* <Text style={styles.luxurySubtitle}>•</Text> */}
           <Text style={styles.luxurySubtitle}>Anonymous Campus Chit Chat </Text>
 
 
@@ -587,15 +644,112 @@ export default function PmcChatScreen({ serverHost, currentUser, authToken, isKe
 
           {/* Action Button: Connect with Piya */}
           <TouchableOpacity
-            style={styles.luxuryButton}
+            style={[styles.luxuryButton, isSearchingAnonymous && styles.searchButtonDisabled]}
             onPress={startSearch}
+            disabled={isSearchingAnonymous}
             activeOpacity={0.85}
           >
             <Ionicons name="heart" size={20} color="#ffffff" style={{ marginRight: 8 }} />
             <Text style={styles.luxuryButtonText}>Connect with Piya</Text>
             <Ionicons name="arrow-forward" size={18} color="#ffffff" style={{ marginLeft: 8 }} />
           </TouchableOpacity>
-        </View>
+        </ScrollView>
+
+        <TouchableOpacity
+          style={styles.searchTopButton}
+          onPress={() => setIsAnonymousSearchModalVisible(true)}
+          activeOpacity={0.85}
+          accessibilityRole="button"
+          accessibilityLabel="Search by anonymous username"
+        >
+          <Ionicons name="search" size={16} color="#ffffff" />
+          <Text style={styles.searchTopButtonText}>Find</Text>
+        </TouchableOpacity>
+
+        <Modal
+          visible={isAnonymousSearchModalVisible}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setIsAnonymousSearchModalVisible(false)}
+        >
+          <View style={styles.searchModalBackdrop}>
+            <View style={styles.anonymousSearchCard}>
+              <View style={styles.searchModalHeader}>
+                <View style={styles.searchHeadingIcon}>
+                  <Ionicons name="search" size={17} color="#f9a8d4" />
+                </View>
+                <View style={styles.searchModalTitleBlock}>
+                  <Text style={styles.anonymousSearchTitle}>Find someone by persona</Text>
+                  <Text style={styles.anonymousSearchCaption}>Connect directly when they're online</Text>
+                </View>
+                <TouchableOpacity
+                  style={styles.searchModalClose}
+                  onPress={() => setIsAnonymousSearchModalVisible(false)}
+                  accessibilityRole="button"
+                  accessibilityLabel="Close anonymous name search"
+                >
+                  <Ionicons name="close" size={19} color="#cbd5e1" />
+                </TouchableOpacity>
+              </View>
+
+              <View style={styles.anonymousSearchRow}>
+                <TextInput
+                  style={styles.anonymousSearchInput}
+                  placeholder="Enter anonymous username"
+                  placeholderTextColor="#64748b"
+                  value={anonymousSearchName}
+                  editable={!isSearchingAnonymous}
+                  onChangeText={(value) => {
+                    setAnonymousSearchName(value);
+                    setAnonymousSearchFeedback(null);
+                  }}
+                  onSubmitEditing={searchAnonymousUser}
+                  returnKeyType="search"
+                  autoCapitalize="words"
+                  maxLength={30}
+                  accessibilityLabel="Anonymous username to search"
+                />
+                <TouchableOpacity
+                  style={[styles.anonymousSearchButton, isSearchingAnonymous && styles.searchButtonDisabled]}
+                  onPress={searchAnonymousUser}
+                  disabled={isSearchingAnonymous}
+                  activeOpacity={0.8}
+                  accessibilityRole="button"
+                  accessibilityLabel="Search for anonymous username"
+                >
+                  {isSearchingAnonymous
+                    ? <ActivityIndicator size="small" color="#fff" />
+                    : <Ionicons name="arrow-forward" size={18} color="#fff" />}
+                </TouchableOpacity>
+              </View>
+              {anonymousSearchFeedback?.status === 'offline' ? (
+                <View style={styles.searchFeedbackOffline}>
+                  <OfflineEmoji gender={anonymousSearchFeedback.gender} />
+                  <Text style={styles.searchFeedbackOfflineText}>
+                    O oo... {anonymousSearchFeedback.gender === 'female' ? 'She' : 'He'} isn't online right now.
+                  </Text>
+                </View>
+              ) : null}
+              {anonymousSearchFeedback && anonymousSearchFeedback.status !== 'offline' ? (
+                <View style={styles.searchFeedbackMessage}>
+                  <Ionicons
+                    name="information-circle"
+                    size={16}
+                    color={anonymousSearchFeedback.status === 'busy' || anonymousSearchFeedback.status === 'requester_busy' ? '#fbbf24' : '#f9a8d4'}
+                  />
+                  <Text style={styles.searchFeedbackText}>
+                    {anonymousSearchFeedback.status === 'not_found' && 'No persona found with that username.'}
+                    {anonymousSearchFeedback.status === 'invalid' && 'Enter a valid anonymous username.'}
+                    {anonymousSearchFeedback.status === 'busy' && "They're online, but chatting right now."}
+                    {anonymousSearchFeedback.status === 'requester_busy' && 'Leave your current chat before searching.'}
+                    {anonymousSearchFeedback.status === 'self' && "That's your own persona name."}
+                    {anonymousSearchFeedback.status === 'error' && 'Could not search right now. Please try again.'}
+                  </Text>
+                </View>
+              ) : null}
+            </View>
+          </View>
+        </Modal>
       </Animated.View>
     );
   }
@@ -836,6 +990,16 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center'
   },
+  lobbyScroll: {
+    flex: 1,
+    width: '100%'
+  },
+  lobbyScrollContent: {
+    flexGrow: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 24
+  },
   ambientGlow: {
     position: 'absolute',
     width: 300,
@@ -848,7 +1012,39 @@ const styles = StyleSheet.create({
   lobbyContent: {
     alignItems: 'center',
     width: '88%',
-    maxWidth: 380
+    maxWidth: 380,
+    alignSelf: 'center'
+  },
+  searchTopButton: {
+    position: 'absolute',
+    top: 16,
+    right: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 22,
+    backgroundColor: '#db2777',
+    borderWidth: 1,
+    borderColor: 'rgba(249,168,212,0.35)',
+    shadowColor: '#db2777',
+    shadowOpacity: 0.35,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 7
+  },
+  searchTopButtonText: {
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: '700'
+  },
+  searchModalBackdrop: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 22,
+    backgroundColor: 'rgba(3, 5, 12, 0.78)'
   },
   floatingHeartItem: {
     position: 'absolute',
@@ -965,8 +1161,114 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 8,
     borderRadius: 12,
-    marginBottom: 28,
+    marginBottom: 14,
     gap: 8
+  },
+  anonymousSearchCard: {
+    width: '100%',
+    maxWidth: 380,
+    backgroundColor: '#10121d',
+    borderWidth: 1,
+    borderColor: 'rgba(236,72,153,0.28)',
+    borderRadius: 22,
+    padding: 18,
+    shadowColor: '#db2777',
+    shadowOpacity: 0.2,
+    shadowRadius: 24,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 12
+  },
+  searchModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 18
+  },
+  searchModalTitleBlock: {
+    flex: 1
+  },
+  searchModalClose: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.07)'
+  },
+  searchHeadingIcon: {
+    width: 38,
+    height: 38,
+    borderRadius: 13,
+    backgroundColor: 'rgba(236,72,153,0.12)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 11
+  },
+  anonymousSearchTitle: {
+    color: '#f8fafc',
+    fontSize: 15,
+    fontWeight: '700'
+  },
+  anonymousSearchCaption: {
+    color: '#64748b',
+    fontSize: 11,
+    marginTop: 4
+  },
+  anonymousSearchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8
+  },
+  anonymousSearchInput: {
+    flex: 1,
+    minWidth: 0,
+    height: 48,
+    backgroundColor: '#0b0d15',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+    paddingHorizontal: 12,
+    color: '#f8fafc',
+    fontSize: 13
+  },
+  anonymousSearchButton: {
+    width: 48,
+    height: 48,
+    borderRadius: 14,
+    backgroundColor: '#be2872',
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  searchButtonDisabled: {
+    opacity: 0.65
+  },
+  searchFeedbackOffline: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 12,
+    paddingHorizontal: 8,
+    paddingVertical: 8,
+    backgroundColor: 'rgba(255,255,255,0.035)',
+    borderRadius: 14,
+    gap: 10
+  },
+  searchFeedbackOfflineText: {
+    flex: 1,
+    color: '#e2e8f0',
+    fontSize: 12,
+    lineHeight: 18,
+    fontWeight: '600'
+  },
+  searchFeedbackMessage: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 9,
+    gap: 6
+  },
+  searchFeedbackText: {
+    flex: 1,
+    color: '#aab3c5',
+    fontSize: 11,
+    lineHeight: 16
   },
   personaLabel: {
     color: '#64748b',

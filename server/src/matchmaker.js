@@ -114,6 +114,54 @@ class Matchmaker {
     this.waitingQueue = this.waitingQueue.filter(item => item.socket.id !== socketId);
   }
 
+  connectToUser(socket, targetUser, userInfo = {}) {
+    const requesterId = this.getUserIdentity(socket);
+    if (requesterId === targetUser.id) return 'self';
+    const activeUserIdentities = this.getActiveUserIdentities();
+    const pendingUserIdentities = new Set();
+    for (const reservation of new Set(this.pendingMatches.values())) {
+      pendingUserIdentities.add(this.getUserIdentity(reservation.socket));
+      pendingUserIdentities.add(this.getUserIdentity(reservation.partnerSocket));
+    }
+    if (
+      activeUserIdentities.has(requesterId) ||
+      pendingUserIdentities.has(requesterId)
+    ) return 'requester_busy';
+
+    const targetSockets = [...this.io.sockets.sockets.values()].filter(candidate => (
+      candidate.connected &&
+      candidate.data?.userId === targetUser.id
+    ));
+    if (targetSockets.length === 0) return 'offline';
+
+    const targetSocket = targetSockets.find(candidate => (
+      !activeUserIdentities.has(targetUser.id) &&
+      !pendingUserIdentities.has(targetUser.id) &&
+      !this.userRooms.has(candidate.id) &&
+      !this.pendingMatches.has(candidate.id)
+    ));
+    if (!targetSocket) return 'busy';
+
+    const waitingItem = this.waitingQueue.find(item => item.socket.id === targetSocket.id);
+    this.removeFromQueue(targetSocket.id);
+    this.removeFromQueue(socket.id);
+    this.pair(
+      {
+        socket,
+        gender: userInfo.gender === 'female' ? 'female' : 'male',
+        alias: userInfo.alias || socket.data?.studentUser?.anonymousName,
+        academicYear: userInfo.academicYear || socket.data?.studentUser?.academicYear
+      },
+      waitingItem || {
+        socket: targetSocket,
+        gender: targetUser.gender === 'female' ? 'female' : 'male',
+        alias: targetUser.anonymousName,
+        academicYear: targetUser.academicYear
+      }
+    );
+    return 'matched';
+  }
+
   cancelPendingMatch(socket, requeuePartner = true) {
     const reservation = this.pendingMatches.get(socket.id);
     if (!reservation) return;

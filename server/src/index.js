@@ -402,6 +402,43 @@ io.on('connection', (socket) => {
     io.emit('online_stats', matchmaker.getOnlineStats());
   });
 
+  socket.on('search_anonymous_user', async (data) => {
+    const user = socket.data.studentUser;
+    if (isChatSocketBlocked(socket)) return;
+    const anonymousName = typeof data?.anonymousName === 'string'
+      ? data.anonymousName.trim()
+      : '';
+    if (!anonymousName || anonymousName.length > 30) {
+      socket.emit('anonymous_search_result', { status: 'invalid' });
+      return;
+    }
+
+    try {
+      const targetUser = await db.findUserByAnonymousName(anonymousName);
+      if (!targetUser) {
+        socket.emit('anonymous_search_result', { status: 'not_found' });
+        return;
+      }
+
+      const status = matchmaker.connectToUser(socket, targetUser, {
+        gender: user.gender,
+        alias: user.anonymousName,
+        academicYear: user.academicYear
+      });
+      if (status !== 'matched') {
+        socket.emit('anonymous_search_result', {
+          status,
+          gender: targetUser.gender === 'female' ? 'female' : 'male',
+          alias: targetUser.anonymousName
+        });
+      }
+      io.emit('online_stats', matchmaker.getOnlineStats());
+    } catch (error) {
+      console.error('[PMC] Could not search for an anonymous user:', error);
+      socket.emit('anonymous_search_result', { status: 'error' });
+    }
+  });
+
   socket.on('send_message', (data) => {
     if (isChatSocketBlocked(socket)) return;
     matchmaker.sendMessage(socket, data.text);
@@ -964,7 +1001,7 @@ app.post('/api/auth/send-otp', async (req, res) => {
     if (existing) {
       return res.status(400).json({
         success: false,
-        message: `This MANIT email (${validation.email}) is already registered. Please Log In directly.`
+        message: 'This scholar number is already registered. Please log in instead.'
       });
     }
 
@@ -986,7 +1023,7 @@ app.post('/api/auth/send-otp', async (req, res) => {
 
     const response = {
       success: true,
-      message: `A 6-digit verification OTP has been dispatched to ${validation.email}. Please check your inbox / spam folder.`,
+      message: 'A 6-digit verification code was sent to the MANIT college email formed from your scholar number. Please check your inbox or spam folder.',
       email: validation.email,
       scholarNo: validation.scholarNo
     };
@@ -1003,7 +1040,7 @@ app.post('/api/auth/send-otp', async (req, res) => {
 app.post('/api/auth/forgot-password', async (req, res) => {
   const genericResponse = {
     success: true,
-    message: 'If an account exists for that MANIT email, a password reset code will be sent shortly. Check your inbox and spam folder.'
+    message: 'If an account exists for that scholar number, a password reset code will be sent to its registered MANIT college email. Check the inbox and spam folder.'
   };
   try {
     const validation = db.validateManitEmail(req.body?.email);
@@ -1150,7 +1187,7 @@ app.post('/api/auth/login', async (req, res) => {
     if (!identifier || !password) {
       return res.status(400).json({
         success: false,
-        message: 'Please provide your Email/Scholar No/Anonymous Name and Password.'
+        message: 'Please provide your scholar number and password.'
       });
     }
 

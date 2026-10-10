@@ -3,7 +3,7 @@ const { promisify } = require('util');
 const { Prisma, PrismaClient } = require('@prisma/client');
 const { v4: uuidv4 } = require('uuid');
 
-const ACCOUNT_NOT_FOUND = 'Account not found. Please check your Email / Scholar No / Anonymous Name or Register.';
+const ACCOUNT_NOT_FOUND = 'Account not found. Please check your scholar number or register.';
 const CHAT_REPORT_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 const CHAT_REPORT_COOLDOWN_MESSAGE = 'You can submit only one PMC chat report every 24 hours.';
 const scrypt = promisify(crypto.scrypt);

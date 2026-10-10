@@ -442,7 +442,7 @@ class LocalDB {
   loginUser(identifier, password) {
     const user = this.findUserByIdentifier(identifier);
     if (!user) {
-      throw new Error('Account not found. Please check your Email / Scholar No / Anonymous Name or Register.');
+      throw new Error('Account not found. Please check your scholar number or register.');
     }
     if (user.password !== password.trim()) {
       throw new Error('Incorrect password. Please try again.');

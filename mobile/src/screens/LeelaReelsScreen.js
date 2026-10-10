@@ -43,6 +43,9 @@ const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const REEL_HEIGHT = SCREEN_HEIGHT - 65;
 const MAX_REEL_DURATION_SECONDS = 40;
 const MAX_REEL_AUDIO_SIZE_BYTES = 25 * 1024 * 1024;
+const REEL_FETCH_MAX_WAIT_MS = 60 * 1000;
+const REEL_FETCH_TIMEOUT_MS = 8 * 1000;
+const REEL_FETCH_RETRY_DELAY_MS = 2 * 1000;
 
 function shuffleReelsByDay(reels) {
   const seenIds = new Set();
@@ -381,6 +384,15 @@ function VideoStoryEditor({
     }
   };
 
+  const handleAudioTrackStartChange = (start) => {
+    if (isPreviewingMix) {
+      audioPlayer.pause();
+      player.pause();
+      setIsPreviewingMix(false);
+    }
+    setSelectedAudioStart(start);
+  };
+
   const cycleCropMode = () => {
     if (cropMode === '9:16') setCropMode('1:1');
     else if (cropMode === '1:1') setCropMode('full');
@@ -472,7 +484,7 @@ function VideoStoryEditor({
               duration={selectedAudioDuration}
               selectionDuration={Math.min(trimEnd - trimStart, selectedAudioDuration)}
               start={selectedAudioStart}
-              onStartChange={setSelectedAudioStart}
+              onStartChange={handleAudioTrackStartChange}
             />
           ) : (
             <View style={styles.audioLoadingCard}>
@@ -826,7 +838,7 @@ async function uploadMediaFile(
       onUploadStarted?.();
     } catch (error) {
       console.error('[Reels] Could not start the Android upload service:', error);
-      const uploadError = new Error('The upload could not be started.');
+      const uploadError = new Error(error?.message || 'The upload could not be started.');
       uploadError.code = 'UPLOAD_START_FAILED';
       throw uploadError;
     }
@@ -846,17 +858,26 @@ async function uploadMediaFile(
           await BackgroundReelUpload.clearUploadState();
           if (state.status === 'failed') {
             const responseCode = Number(state.responseCode) || 0;
-            let failureMessage = 'The upload could not be completed.';
-            if (responseCode === 400 || responseCode === 413) {
+            let responseMessage = '';
+            if (state.responseBody) {
               try {
-                failureMessage = JSON.parse(state.responseBody).message || failureMessage;
+                responseMessage = JSON.parse(state.responseBody).message || '';
               } catch (parseError) {
                 console.warn('[Reels] The upload error response was not valid JSON:', parseError);
               }
             }
+            const failureMessage = responseMessage || state.error || (
+              responseCode ? `The server rejected the upload (HTTP ${responseCode}).` : 'The upload could not be completed.'
+            );
             const uploadError = new Error(failureMessage);
             uploadError.statusCode = responseCode;
-            uploadError.code = uploadError.statusCode === 404 ? 'UPLOAD_ROUTE_NOT_FOUND' : 'UPLOAD_FAILED';
+            uploadError.code = responseCode === 404
+              ? url.includes('/api/reels/audio-upload')
+                ? 'MUSIC_UPLOAD_ENDPOINT_NOT_FOUND'
+                : 'UPLOAD_ROUTE_NOT_FOUND'
+              : responseCode === 401
+                ? 'UPLOAD_AUTH_REQUIRED'
+                : 'UPLOAD_FAILED';
             throw uploadError;
           }
 
@@ -944,7 +965,7 @@ async function uploadMediaFile(
   } catch (error) {
     if (error.code) throw error;
     console.error('[Reels] File upload failed:', error);
-    const uploadError = new Error('The upload was interrupted by a connection problem.');
+    const uploadError = new Error(error?.message || 'The upload was interrupted by a connection problem.');
     uploadError.code = 'UPLOAD_NETWORK_ERROR';
     throw uploadError;
   } finally {
@@ -953,14 +974,23 @@ async function uploadMediaFile(
 }
 
 function getPublishErrorMessage(error) {
+  if (error?.code === 'UPLOAD_AUTH_REQUIRED' || error?.statusCode === 401) {
+    return 'Your sign-in has expired or is no longer valid. Sign in again, then retry publishing your reel.';
+  }
   if (error?.code === 'MUSIC_UPLOAD_ENDPOINT_NOT_FOUND') {
     return 'Music uploads are not enabled on the server yet. Ask the administrator to update the server, then try again.';
   }
   if (error?.code === 'UPLOAD_ROUTE_NOT_FOUND') {
     return 'The reel upload service is not available on the server. Please contact the administrator.';
   }
-  if (error?.statusCode === 400 || error?.statusCode === 413) {
+  if (error?.statusCode) {
     return error.message;
+  }
+  if (error?.code === 'UPLOAD_START_FAILED') {
+    return `Could not start the Android background uploader: ${error.message}`;
+  }
+  if (error?.code === 'UPLOAD_NETWORK_ERROR' && error.message) {
+    return `The upload connection failed: ${error.message}`;
   }
   return 'The upload could not finish. Check your connection and try again; your reel edits are still here.';
 }
@@ -981,6 +1011,7 @@ export default function LeelaReelsScreen({
   const [reelsFetchFailed, setReelsFetchFailed] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [reelHeight, setReelHeight] = useState(REEL_HEIGHT);
+  const fetchRequestRef = useRef(null);
 
   const handleContainerLayout = (e) => {
     const { height } = e.nativeEvent.layout;
@@ -1016,25 +1047,64 @@ export default function LeelaReelsScreen({
   }, [isTabActive]);
 
   // Fetch reels from backend
-  const fetchReels = async () => {
-    try {
-      const res = await fetch(`${getBaseUrl(serverHost)}/api/reels`, {
-        headers: authToken ? { Authorization: `Bearer ${authToken}` } : {}
-      });
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        throw new Error(data.message || 'Could not load reels.');
-      }
-      if (!Array.isArray(data.data)) throw new Error('Could not load reels.');
-      setReels(shuffleReelsByDay(data.data));
+  const fetchReels = ({ waitForServer = true } = {}) => {
+    if (fetchRequestRef.current) return fetchRequestRef.current;
+
+    const request = (async () => {
+      const deadline = Date.now() + (waitForServer ? REEL_FETCH_MAX_WAIT_MS : REEL_FETCH_TIMEOUT_MS);
+      let lastError;
       setReelsFetchFailed(false);
-    } catch (err) {
-      setReelsFetchFailed(true);
-      console.log('Error fetching reels from server:', err.message);
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
+      if (reels.length === 0) setLoading(true);
+
+      try {
+        while (Date.now() < deadline) {
+          const remainingMs = deadline - Date.now();
+          const controller = new AbortController();
+          const timeout = setTimeout(
+            () => controller.abort(),
+            Math.min(REEL_FETCH_TIMEOUT_MS, remainingMs)
+          );
+
+          try {
+            const res = await fetch(`${getBaseUrl(serverHost)}/api/reels`, {
+              headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
+              signal: controller.signal
+            });
+            const data = await res.json();
+            if (!res.ok || !data.success) {
+              const error = new Error(data.message || `Could not load reels (HTTP ${res.status}).`);
+              error.statusCode = res.status;
+              throw error;
+            }
+            if (!Array.isArray(data.data)) throw new Error('Could not load reels.');
+            setReels(shuffleReelsByDay(data.data));
+            setReelsFetchFailed(false);
+            return;
+          } catch (err) {
+            lastError = err;
+            if (err.statusCode >= 400 && err.statusCode < 500) break;
+          } finally {
+            clearTimeout(timeout);
+          }
+
+          const delayMs = Math.min(REEL_FETCH_RETRY_DELAY_MS, deadline - Date.now());
+          if (delayMs > 0) {
+            await new Promise((resolve) => setTimeout(resolve, delayMs));
+          }
+        }
+
+        setReelsFetchFailed(true);
+        console.log('Error fetching reels from server:', lastError?.message || 'Connection timed out.');
+      } finally {
+        setLoading(false);
+        setRefreshing(false);
+      }
+    })().finally(() => {
+      fetchRequestRef.current = null;
+    });
+
+    fetchRequestRef.current = request;
+    return request;
   };
 
   useEffect(() => {
@@ -1473,7 +1543,7 @@ export default function LeelaReelsScreen({
       if (uploadResult && uploadResult.success) {
         setUploadProgress(100);
         // Fetch all reels from server to display permanently
-        await fetchReels();
+        await fetchReels({ waitForServer: false });
         setSelectedVideoUri(null);
         if (isTabActiveRef.current) setPublishSuccessVisible(true);
       } else {
@@ -1560,8 +1630,32 @@ export default function LeelaReelsScreen({
         </View>
       )}
 
-      {/* If No Reels, Show Clean Empty State */}
-      {reels.length === 0 ? (
+      {loading && reels.length === 0 ? (
+        <View style={styles.emptyContainer}>
+          <ActivityIndicator size="large" color="#f472b6" />
+          <Text style={styles.emptyTitle}>Connecting to Leela</Text>
+          <Text style={styles.emptySubtitle}>
+            Loading reels. This can take up to a minute.
+          </Text>
+        </View>
+      ) : reelsFetchFailed && reels.length === 0 ? (
+        <View style={styles.emptyContainer}>
+          <View style={styles.emptyIconBox}>
+            <Ionicons name="cloud-offline-outline" size={42} color="#f472b6" />
+          </View>
+          <Text style={styles.emptyTitle}>Could not connect to Leela</Text>
+          <Text style={styles.emptySubtitle}>
+            Check your internet connection and try again.
+          </Text>
+          <TouchableOpacity
+            style={styles.postFirstBtn}
+            onPress={() => fetchReels()}
+          >
+            <Ionicons name="refresh" size={20} color="#ffffff" style={{ marginRight: 6 }} />
+            <Text style={styles.postFirstBtnText}>Retry</Text>
+          </TouchableOpacity>
+        </View>
+      ) : reels.length === 0 ? (
         <View style={styles.emptyContainer}>
           <View style={styles.emptyIconBox}>
             <Ionicons name="videocam-outline" size={48} color="#ec4899" />

@@ -49,14 +49,14 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
   const [loginPassword, setLoginPassword] = useState('');
   const [forgotPasswordMode, setForgotPasswordMode] = useState(false);
   const [passwordResetStep, setPasswordResetStep] = useState('email');
-  const [resetEmail, setResetEmail] = useState('');
+  const [resetScholarNumber, setResetScholarNumber] = useState('');
   const [resetOtp, setResetOtp] = useState('');
   const [resetNewPassword, setResetNewPassword] = useState('');
   const [resetConfirmPassword, setResetConfirmPassword] = useState('');
   const [resetOtpTimer, setResetOtpTimer] = useState(0);
 
   // Register State (all initial fields blank - NO autofills)
-  const [email, setEmail] = useState('');
+  const [scholarNumber, setScholarNumber] = useState('');
   const [password, setPassword] = useState('');
   const [gender, setGender] = useState(''); // 'female' | 'male'
   const [academicYear, setAcademicYear] = useState(''); // '1st Year' | '2nd Year' | '3rd Year' | '4th Year'
@@ -89,18 +89,24 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
     return () => clearInterval(timer);
   }, [forgotPasswordMode, passwordResetStep, resetOtpTimer]);
 
-  // Validate MANIT Student Email
-  const isValidManitEmail = (val) => {
-    if (!val) return false;
-    return /^([a-zA-Z0-9._%+-]+)@stu\.manit\.ac\.in$/i.test(val.trim());
+  const normalizeScholarNumber = (val) => {
+    const trimmed = typeof val === 'string' ? val.trim() : '';
+    return trimmed.replace(/@stu\.manit\.ac\.in$/i, '');
   };
 
-  // Derive Academic Year from Scholar Number prefix in email (Reference year: 2026)
-  const deriveAcademicYearFromEmail = (val) => {
-    if (!val) return null;
-    const match = val.trim().toLowerCase().match(/^([a-z0-9._%+-]+)@stu\.manit\.ac\.in$/i);
-    if (!match) return null;
-    const digits = match[1].match(/^(\d{2})/);
+  const isValidScholarNumber = (val) => (
+    /^[a-zA-Z0-9._%+-]{1,64}$/.test(normalizeScholarNumber(val))
+  );
+
+  const getManitEmail = (val) => {
+    const normalized = normalizeScholarNumber(val);
+    return isValidScholarNumber(normalized)
+      ? `${normalized.toLowerCase()}@stu.manit.ac.in`
+      : '';
+  };
+
+  const deriveAcademicYearFromScholarNumber = (val) => {
+    const digits = normalizeScholarNumber(val).match(/^(\d{2})/);
     if (!digits) return null;
     const prefix = parseInt(digits[1], 10);
     const diff = 26 - prefix; // Current 2026 academic year
@@ -111,9 +117,9 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
     return '1st';
   };
 
-  const handleEmailChange = (val) => {
-    setEmail(val);
-    const detectedYear = deriveAcademicYearFromEmail(val);
+  const handleScholarNumberChange = (val) => {
+    setScholarNumber(normalizeScholarNumber(val));
+    const detectedYear = deriveAcademicYearFromScholarNumber(val);
     if (detectedYear) {
       setAcademicYear(detectedYear);
     }
@@ -145,17 +151,11 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
     setAnonymousName(randomChoice);
   };
 
-  // Step 1: Send OTP to MANIT Email
+  // Step 1: Send OTP to the MANIT email derived from the scholar number.
   const handleSendOtp = async () => {
-    if (!email.trim()) {
-      Alert.alert('Email Required', 'Please enter your MANIT college email.');
-      return;
-    }
-    if (!isValidManitEmail(email)) {
-      Alert.alert(
-        'Invalid Email Format',
-        'Only official MANIT student emails are allowed (e.g. scholar_no@stu.manit.ac.in).'
-      );
+    const collegeEmail = getManitEmail(scholarNumber);
+    if (!collegeEmail) {
+      Alert.alert('Scholar number required', 'Enter a valid MANIT scholar number.');
       return;
     }
     if (!password.trim() || password.length < 6) {
@@ -181,7 +181,7 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          email: email.trim()
+          email: collegeEmail
         })
       });
 
@@ -218,7 +218,7 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          email: email.trim(),
+          email: getManitEmail(scholarNumber),
           otp: otpCode.trim(),
           password: password.trim(),
           gender,
@@ -245,7 +245,7 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
   // Submit Login
   const handleLoginSubmit = async () => {
     if (!loginIdentifier.trim() || !loginPassword.trim()) {
-      Alert.alert('Missing Fields', 'Please enter your email/username and password.');
+      Alert.alert('Missing Fields', 'Please enter your scholar number and password.');
       return;
     }
 
@@ -275,8 +275,8 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
   };
 
   const openForgotPassword = () => {
-    const candidateEmail = loginIdentifier.trim();
-    setResetEmail(isValidManitEmail(candidateEmail) ? candidateEmail : '');
+    const candidate = normalizeScholarNumber(loginIdentifier);
+    setResetScholarNumber(deriveAcademicYearFromScholarNumber(candidate) ? candidate : '');
     setResetOtp('');
     setResetNewPassword('');
     setResetConfirmPassword('');
@@ -286,8 +286,9 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
   };
 
   const handleRequestPasswordReset = async () => {
-    if (!isValidManitEmail(resetEmail)) {
-      Alert.alert('College email required', 'Enter the registered MANIT student email ending in @stu.manit.ac.in.');
+    const collegeEmail = getManitEmail(resetScholarNumber);
+    if (!collegeEmail) {
+      Alert.alert('Scholar number required', 'Enter the scholar number used to register your account.');
       return;
     }
     try {
@@ -295,7 +296,7 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
       const response = await fetch(`${getBaseUrl(serverHost)}/api/auth/forgot-password`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: resetEmail.trim() })
+        body: JSON.stringify({ email: collegeEmail })
       });
       const result = await response.json();
       if (!response.ok || !result.success) {
@@ -315,7 +316,7 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
 
   const handleResetPassword = async () => {
     if (!/^\d{6}$/.test(resetOtp.trim())) {
-      Alert.alert('Code required', 'Enter the 6-digit code sent to your MANIT email.');
+      Alert.alert('Code required', 'Enter the 6-digit code sent to your MANIT college email.');
       return;
     }
     if (resetNewPassword.trim().length < 6 || resetNewPassword.length > 128) {
@@ -333,7 +334,7 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          email: resetEmail.trim(),
+          email: getManitEmail(resetScholarNumber),
           otp: resetOtp.trim(),
           newPassword: resetNewPassword
         })
@@ -342,7 +343,7 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
       if (!response.ok || !result.success) {
         throw new Error(result.message || 'Could not reset password. Request a new code and try again.');
       }
-      setLoginIdentifier(resetEmail.trim());
+      setLoginIdentifier(resetScholarNumber.trim());
       setLoginPassword('');
       setForgotPasswordMode(false);
       setPasswordResetStep('email');
@@ -489,23 +490,25 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
                   <Text style={styles.otpTitle}>Reset your password</Text>
                   <Text style={styles.otpSub}>
                     {passwordResetStep === 'email'
-                      ? 'We will send a one-time reset code to your registered MANIT email.'
-                      : 'Enter the code from your email and choose a new password.'}
+                      ? 'We will send a one-time reset code to your registered Manit email.'
+                      : 'Enter the reset code sent to the MANIT college email, then choose a new password.'}
                   </Text>
                 </View>
 
                 <View style={styles.inputGroup}>
-                  <Text style={styles.inputLabel}>Registered MANIT email</Text>
+                  <Text style={styles.inputLabel}>Scholar number</Text>
                   <TextInput
                     style={styles.inputField}
-                    placeholder="scholar_no@stu.manit.ac.in"
+                    placeholder="Enter your scholar number"
                     placeholderTextColor="#64748b"
-                    value={resetEmail}
-                    onChangeText={setResetEmail}
-                    autoCapitalize="none"
-                    keyboardType="email-address"
+                    value={resetScholarNumber}
+                    onChangeText={(value) => setResetScholarNumber(normalizeScholarNumber(value))}
+                    autoCapitalize="characters"
+                    autoCorrect={false}
+                    maxLength={64}
                     editable={passwordResetStep === 'email'}
                   />
+
                 </View>
 
                 {passwordResetStep === 'code' && (
@@ -591,10 +594,10 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
             ) : (
               <>
             <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>Email or Anonymous Name</Text>
+              <Text style={styles.inputLabel}>Scholar number or anonymous name</Text>
               <TextInput
                 style={styles.inputField}
-                placeholder="scholar_no@stu.manit.ac.in"
+                placeholder="Scholar number or anonymous name"
                 placeholderTextColor="#64748b"
                 value={loginIdentifier}
                 onChangeText={setLoginIdentifier}
@@ -663,39 +666,41 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
             </View>
 
             <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>College Email ID</Text>
+              <Text style={styles.inputLabel}>MANIT Scholar Number</Text>
               <TextInput
                 style={[
                   styles.inputField,
-                  email.trim().length > 0 && (
-                    isValidManitEmail(email)
+                  scholarNumber.trim().length > 0 && (
+                    isValidScholarNumber(scholarNumber)
                       ? { borderColor: '#10b981' }
                       : { borderColor: '#ef4444' }
                   )
                 ]}
-                placeholder="scholar_no@stu.manit.ac.in"
+                placeholder="Enter your scholar number"
                 placeholderTextColor="#64748b"
-                value={email}
-                onChangeText={handleEmailChange}
-                autoCapitalize="none"
-                keyboardType="email-address"
+                value={scholarNumber}
+                onChangeText={handleScholarNumberChange}
+                autoCapitalize="characters"
+                autoCorrect={false}
+                maxLength={64}
               />
-              {email.trim().length > 0 && (
+
+              {scholarNumber.trim().length > 0 && (
                 <View style={styles.emailValidationRow}>
-                  {isValidManitEmail(email) ? (
+                  {isValidScholarNumber(scholarNumber) ? (
                     <>
                       <Ionicons name="checkmark-circle" size={14} color="#10b981" />
-                      <Text style={styles.emailValidText}>Valid MANIT email</Text>
-                      {deriveAcademicYearFromEmail(email) && (
+                      <Text style={styles.emailValidText}>Scholar number looks valid</Text>
+                      {deriveAcademicYearFromScholarNumber(scholarNumber) && (
                         <Text style={styles.autoDetectedYearText}>
-                          • Auto-detected: {deriveAcademicYearFromEmail(email)}
+                          • Auto-detected: {deriveAcademicYearFromScholarNumber(scholarNumber)}
                         </Text>
                       )}
                     </>
                   ) : (
                     <>
                       <Ionicons name="close-circle" size={14} color="#ef4444" />
-                      <Text style={styles.emailInvalidText}>Must be scholar_no@stu.manit.ac.in</Text>
+                      <Text style={styles.emailInvalidText}>Use letters/numbers only (and . _ % + -)</Text>
                     </>
                   )}
                 </View>
@@ -796,7 +801,7 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
             <View style={styles.privacyBox}>
               <Ionicons name="lock-closed" size={14} color="#10b981" />
               <Text style={styles.privacyText}>
-                Your email is used for verification. Only your anonymous name is shown to others.
+                Your scholar number is for verification that you are Manit Student. Only your anonymous name is shown to other students.
               </Text>
             </View>
 
@@ -820,11 +825,10 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
           <View style={styles.formCard}>
             <View style={styles.otpHeader}>
               <Ionicons name="mail-open-outline" size={36} color="#ec4899" />
-              <Text style={styles.otpTitle}>Verify College Email</Text>
+              <Text style={styles.otpTitle}>Verify MANIT student account</Text>
               <Text style={styles.otpSub}>
-                Enter the 6-digit OTP code sent to:
+                If you are a MANIT student, an OTP will have been sent to your MANIT college email.
               </Text>
-              <Text style={styles.otpEmail}>{email.trim()}</Text>
               {localTestOtp ? (
                 <Text style={styles.localOtpNotice}>Local test code: {localTestOtp}</Text>
               ) : null}
@@ -884,16 +888,18 @@ export default function LoginScreen({ serverHost, onLoginSuccess }) {
             <View style={styles.successModalIcon}>
               <Ionicons name="mail-open" size={30} color="#f9a8d4" />
             </View>
-            <Text style={styles.successModalEyebrow}>EMAIL VERIFICATION</Text>
+            <Text style={styles.successModalEyebrow}>STUDENT VERIFICATION</Text>
             <Text style={styles.successModalTitle}>Code on its way</Text>
             <Text style={styles.successModalMessage}>
               {localTestOtp
                 ? 'Local test mode is active. Your verification code is shown below.'
-                : 'We sent a one-time code to your MANIT inbox.'}
+                : 'If you are a MANIT student, an OTP will have been sent to your MANIT college email.'}
             </Text>
             <View style={styles.successModalEmailRow}>
               <Ionicons name="mail-outline" size={17} color="#f9a8d4" />
-              <Text style={styles.successModalEmail} numberOfLines={1}>{email.trim()}</Text>
+              <Text style={styles.successModalEmail} numberOfLines={1}>
+                MANIT college email identified by your scholar number
+              </Text>
             </View>
             <Text style={styles.successModalHint}>
               {localTestOtp ? `Local test code: ${localTestOtp}` : 'If it’s not there, check your spam folder.'}
@@ -1098,6 +1104,12 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
     marginBottom: 6
+  },
+  scholarNumberHint: {
+    color: '#7f8ba3',
+    fontSize: 11,
+    lineHeight: 16,
+    marginTop: 6
   },
   randomBtn: {
     color: '#ec4899',

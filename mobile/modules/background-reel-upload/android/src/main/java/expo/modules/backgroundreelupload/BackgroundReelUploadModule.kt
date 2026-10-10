@@ -17,11 +17,11 @@ class BackgroundReelUploadModule : Module() {
         throw IllegalArgumentException("Unsupported upload file field.")
       }
       val preferences = context.getSharedPreferences(ReelUploadService.PREFERENCES, 0)
-      if (preferences.getString("status", "idle") == "running") {
+      val uploadId = UUID.randomUUID().toString()
+      if (!ReelUploadService.tryBeginUpload(uploadId)) {
         throw IllegalStateException("A reel upload is already in progress.")
       }
 
-      val uploadId = UUID.randomUUID().toString()
       preferences.edit()
         .putString("uploadId", uploadId)
         .putString("status", "running")
@@ -46,6 +46,7 @@ class BackgroundReelUploadModule : Module() {
           context.startService(intent)
         }
       } catch (error: Exception) {
+        ReelUploadService.finishUpload(uploadId)
         preferences.edit().putString("status", "failed").putString("error", error.message).apply()
         throw error
       }

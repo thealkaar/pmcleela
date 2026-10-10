@@ -23,7 +23,6 @@ import kotlin.math.roundToInt
 
 class ReelUploadService : Service() {
   private val executor = Executors.newSingleThreadExecutor()
-  private var activeUploadId: String? = null
   private var activeFileFieldName = "video"
   private var lastNotifiedProgress = -1
 
@@ -43,12 +42,19 @@ class ReelUploadService : Service() {
         .putString("status", "failed")
         .putString("error", "The upload request was incomplete.")
         .apply()
+      uploadId?.let { finishUpload(it) }
       stopSelf(startId)
       return START_NOT_STICKY
     }
-    if (activeUploadId == uploadId) return START_NOT_STICKY
+    if (!isUploadActive(uploadId)) {
+      getSharedPreferences(PREFERENCES, 0).edit()
+        .putString("status", "failed")
+        .putString("error", "The upload request is no longer active.")
+        .apply()
+      stopSelf(startId)
+      return START_NOT_STICKY
+    }
 
-    activeUploadId = uploadId
     activeFileFieldName = fileFieldName
     lastNotifiedProgress = -1
     getSharedPreferences(PREFERENCES, 0).edit()
@@ -189,7 +195,7 @@ class ReelUploadService : Service() {
       )
     } finally {
       connection?.disconnect()
-      activeUploadId = null
+      finishUpload(uploadId)
       stopForeground(STOP_FOREGROUND_DETACH)
     }
   }
@@ -327,5 +333,22 @@ class ReelUploadService : Service() {
     private const val CHANNEL_ID = "leela-reel-upload"
     private const val NOTIFICATION_ID = 7411
     private const val BUFFER_SIZE = 64 * 1024
+    @Volatile
+    private var activeUploadId: String? = null
+
+    @Synchronized
+    fun tryBeginUpload(uploadId: String): Boolean {
+      if (activeUploadId != null) return false
+      activeUploadId = uploadId
+      return true
+    }
+
+    @Synchronized
+    fun isUploadActive(uploadId: String): Boolean = activeUploadId == uploadId
+
+    @Synchronized
+    fun finishUpload(uploadId: String) {
+      if (activeUploadId == uploadId) activeUploadId = null
+    }
   }
 }

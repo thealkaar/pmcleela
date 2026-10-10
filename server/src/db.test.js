@@ -21,6 +21,21 @@ function createTestDb() {
   return db;
 }
 
+test('scholar-number login resolves the account registered with its MANIT email', () => {
+  const db = createTestDb();
+  const user = db.users[0];
+  user.scholarNo = '260123456';
+  user.password = 'test-password';
+
+  assert.equal(db.findUserByIdentifier('260123456'), user);
+  assert.equal(db.loginUser('260123456', 'test-password'), user);
+  assert.deepEqual(db.validateManitEmail('260123456@stu.manit.ac.in'), {
+    valid: true,
+    email: '260123456@stu.manit.ac.in',
+    scholarNo: '260123456'
+  });
+});
+
 test('chat and Leela usernames remain separate and unique', () => {
   const originalWriteFileSync = fs.writeFileSync;
   fs.writeFileSync = () => {};
