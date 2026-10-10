@@ -16,6 +16,7 @@ function createTestDb() {
   db.reels = [];
   db.studentIdentities = [{ email: 'girl@stu.manit.ac.in', gender: 'female' }];
   db.accountDeletionRequests = [];
+  db.userNotifications = [];
   db.refreshUsers = () => {};
   db.findUserById = userId => db.users.find(user => user.id === userId) || null;
   return db;
@@ -70,6 +71,99 @@ test('global notification setting reverts in-memory state when persistence fails
   } finally {
     fs.writeFileSync = originalWriteFileSync;
     console.error = originalConsoleError;
+  }
+});
+
+test('reel and comment lists are cursor-paginated and replies notify the parent author', () => {
+  const originalWriteFileSync = fs.writeFileSync;
+  fs.writeFileSync = () => {};
+  try {
+    const db = createTestDb();
+    db.reels = Array.from({ length: 25 }, (_, index) => ({
+      id: `reel-${String(index).padStart(2, '0')}`,
+      createdAt: new Date(Date.now() - index * 1000).toISOString(),
+      comments: []
+    }));
+
+    const firstReelPage = db.getReels('student-girl', { limit: 10 });
+    const secondReelPage = db.getReels('student-girl', {
+      limit: 10,
+      cursor: firstReelPage.nextCursor
+    });
+    assert.equal(firstReelPage.data.length, 10);
+    assert.equal(firstReelPage.hasMore, true);
+    assert.equal(secondReelPage.data.length, 10);
+    assert.equal(new Set([...firstReelPage.data, ...secondReelPage.data].map((reel) => reel.id)).size, 20);
+
+    const reel = db.reels[0];
+    const parent = db.addComment(reel.id, 'LeelaGirl', 'Original comment', '1st', 'student-girl');
+    const reply = db.addComment(
+      reel.id,
+      'LeelaBoy',
+      'A reply',
+      '2nd',
+      'student-boy',
+      parent.comment.id
+    );
+    assert.equal(reply.comment.parentCommentId, parent.comment.id);
+    assert.equal(reply.notification.userId, 'student-girl');
+    assert.equal(db.countCommentReplies(parent.comment.id), 1);
+    assert.equal(db.getUserNotifications('student-girl').length, 1);
+    assert.equal(db.getUserNotifications('student-boy').length, 0);
+
+    const replyPage = db.getReelComments(reel.id, {
+      parentCommentId: parent.comment.id,
+      limit: 20
+    });
+    assert.equal(replyPage.data.length, 1);
+    assert.equal(replyPage.data[0].text, 'A reply');
+    assert.equal(Object.hasOwn(replyPage.data[0], 'authorId'), false);
+
+    assert.equal(db.markUserNotificationRead('student-girl', reply.notification.id), 1);
+    assert.equal(db.markUserNotificationRead('student-girl', reply.notification.id), 1);
+    assert.equal(db.countUnreadUserNotifications('student-girl'), 0);
+  } finally {
+    fs.writeFileSync = originalWriteFileSync;
+  }
+});
+
+test('deleting accounts and reels removes stale reply notifications', () => {
+  const originalWriteFileSync = fs.writeFileSync;
+  fs.writeFileSync = () => {};
+  try {
+    const db = createTestDb();
+    const otherComment = {
+      id: 'comment-by-girl',
+      authorId: 'student-girl',
+      text: 'Keep this comment after account deletion'
+    };
+    db.reels = [
+      { id: 'girl-reel', creatorId: 'student-girl', comments: [] },
+      { id: 'boy-reel', creatorId: 'student-boy', comments: [otherComment] }
+    ];
+    db.reports = [];
+    db.announcements = [];
+    db.userNotifications = [
+      { id: 'girl-notification', userId: 'student-girl', reelId: 'boy-reel' },
+      { id: 'deleted-reel-notification', userId: 'student-boy', reelId: 'girl-reel' },
+      { id: 'unrelated-notification', userId: 'student-other', reelId: 'boy-reel' }
+    ];
+
+    db.deleteUser('student-girl');
+    assert.equal(otherComment.authorId, null);
+    assert.deepEqual(db.userNotifications.map(({ id }) => id), [
+      'unrelated-notification'
+    ]);
+
+    db.userNotifications.push({
+      id: 'boy-reel-notification',
+      userId: 'student-boy',
+      reelId: 'boy-reel'
+    });
+    db.deleteReel('boy-reel');
+    assert.deepEqual(db.userNotifications, []);
+  } finally {
+    fs.writeFileSync = originalWriteFileSync;
   }
 });
 

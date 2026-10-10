@@ -19,6 +19,8 @@ model PmcUser {
   reelLikes     PmcReelLike[]
   reelReports   PmcReelReport[]
   pushTokens    PmcPushToken[]
+  reelComments  PmcReelComment[]
+  notifications PmcUserNotification[]
   chatReportsSubmitted PmcChatReport[] @relation("PmcChatReportReporter")
   chatReportsReceived  PmcChatReport[] @relation("PmcChatReportReportedUser")
 
@@ -76,16 +78,39 @@ model PmcReelLike {
 }
 
 model PmcReelComment {
-  id        String   @id
-  reelId    String   @map("reel_id")
-  user      String
-  userYear  String   @map("user_year")
-  text      String
-  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
-  reel      PmcReel  @relation(fields: [reelId], references: [id], onDelete: Cascade)
+  id              String           @id
+  reelId          String           @map("reel_id")
+  userId          String?          @map("user_id")
+  parentCommentId String?          @map("parent_comment_id")
+  user            String
+  userYear        String           @map("user_year")
+  text            String
+  createdAt       DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  reel            PmcReel          @relation(fields: [reelId], references: [id], onDelete: Cascade)
+  author          PmcUser?         @relation(fields: [userId], references: [id], onDelete: SetNull)
+  parent          PmcReelComment?  @relation("PmcCommentReplies", fields: [parentCommentId], references: [id], onDelete: Cascade)
+  replies         PmcReelComment[] @relation("PmcCommentReplies")
 
-  @@index([reelId, createdAt(sort: Desc)], map: "pmc_reel_comments_reel_id_created_at_idx")
+  @@index([reelId, parentCommentId, createdAt(sort: Desc), id(sort: Desc)], map: "pmc_reel_comments_page_idx")
+  @@index([userId], map: "pmc_reel_comments_user_id_idx")
   @@map("pmc_reel_comments")
+}
+
+model PmcUserNotification {
+  id        String   @id
+  userId    String   @map("user_id")
+  type      String
+  title     String
+  message   String
+  reelId    String?  @map("reel_id")
+  commentId String?  @map("comment_id")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  readAt    DateTime? @map("read_at") @db.Timestamptz(6)
+  user      PmcUser  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt(sort: Desc), id(sort: Desc)], map: "pmc_user_notifications_page_idx")
+  @@index([userId, readAt], map: "pmc_user_notifications_unread_idx")
+  @@map("pmc_user_notifications")
 }
 
 model PmcReelReport {

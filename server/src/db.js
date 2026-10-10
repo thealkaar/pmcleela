@@ -52,6 +52,7 @@ class LocalDB {
     this.pushTokens = useLocalFiles ? readJson(PUSH_TOKENS_FILE, []) : [];
     this.announcements = useLocalFiles ? readJson(ANNOUNCEMENTS_FILE, []) : [];
     this.appReleases = useLocalFiles ? readJson(APP_RELEASES_FILE, []) : [];
+    this.userNotifications = [];
     const settings = useLocalFiles ? readJson(SETTINGS_FILE, { notificationsEnabled: true }) : null;
     this.notificationsEnabled = settings?.notificationsEnabled !== false;
     let usersChanged = false;
@@ -577,9 +578,11 @@ class LocalDB {
     // Find and remove all reels created by this user
     const deletedReelFiles = [];
     const deletedReelStorageKeys = [];
+    const deletedReelIds = new Set();
     const remainingReels = [];
     for (const reel of this.reels) {
       if (reel.creatorId === userId) {
+        deletedReelIds.add(reel.id);
         if (reel.videoStorageKey) {
           deletedReelStorageKeys.push(reel.videoStorageKey);
         }
@@ -589,17 +592,23 @@ class LocalDB {
           if (filename) deletedReelFiles.push(filename);
         }
       } else {
+        for (const comment of reel.comments || []) {
+          if (comment.authorId === userId) comment.authorId = null;
+        }
         remainingReels.push(reel);
       }
     }
     this.reels = remainingReels;
     writeJson(REELS_FILE, this.reels);
+    this.userNotifications = this.userNotifications.filter(
+      (notification) => notification.userId !== userId && !deletedReelIds.has(notification.reelId)
+    );
 
     return { deletedUser, deletedReelFiles, deletedReelStorageKeys };
   }
 
   // --- REELS METHODS ---
-  getReels(userId) {
+  getReels(userId, options = {}) {
     const now = new Date();
     const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
     const startOfYesterday = startOfToday - 24 * 60 * 60 * 1000;
@@ -632,16 +641,36 @@ class LocalDB {
       return [...arr].sort((a, b) => {
         const timeA = new Date(a.createdAt || 0).getTime();
         const timeB = new Date(b.createdAt || 0).getTime();
-        return timeB - timeA;
+        return timeB - timeA || String(b.id).localeCompare(String(a.id));
       });
     };
 
-    return [
+    const reels = [
       ...sortBucket(todayReels),
       ...sortBucket(yesterdayReels),
       ...sortBucket(dayBeforeReels),
       ...sortBucket(olderReels)
     ].map(({ likedBy, ...reel }) => reel);
+    if (!Number.isInteger(options.limit)) return reels;
+
+    const filteredReels = options.cursor
+      ? reels.filter((reel) => {
+        const reelTime = Date.parse(reel.createdAt || '');
+        const cursorTime = Date.parse(options.cursor.createdAt);
+        return reelTime < cursorTime ||
+          (reelTime === cursorTime && String(reel.id) < options.cursor.id);
+      })
+      : reels;
+    const data = filteredReels.slice(0, options.limit);
+    const hasMore = filteredReels.length > options.limit;
+    const lastReel = data[data.length - 1];
+    return {
+      data: data.map((reel) => ({ ...reel, comments: [] })),
+      hasMore,
+      nextCursor: hasMore && lastReel
+        ? { id: lastReel.id, createdAt: lastReel.createdAt }
+        : null
+    };
   }
 
   addReel({ creatorId, creatorName, creatorYear, caption, videoUrl, videoStorageKey, audioTitle, tags, trimStart, trimEnd, cropMode }) {
@@ -688,26 +717,151 @@ class LocalDB {
     return { isLiked: reel.isLiked, likesCount: reel.likesCount };
   }
 
-  addComment(reelId, user, text, userYear) {
+  getReelWithCounts(reelId, userId) {
+    const reel = this.reels.find((item) => item.id === reelId);
+    if (!reel) return null;
+    const likedBy = Array.isArray(reel.likedBy) ? reel.likedBy : [];
+    const { likedBy: _likedBy, ...publicReel } = reel;
+    return {
+      ...publicReel,
+      likesCount: likedBy.length,
+      isLiked: Boolean(userId && likedBy.includes(userId)),
+      commentsCount: (reel.comments || []).length,
+      comments: []
+    };
+  }
+
+  getReelComments(reelId, { parentCommentId = null, cursor = null, limit = 20 } = {}) {
+    const reel = this.reels.find((item) => item.id === reelId);
+    if (!reel) return { data: [], hasMore: false, nextCursor: null };
+    const allComments = reel.comments || [];
+    if (parentCommentId && !allComments.some((comment) =>
+      comment.id === parentCommentId && !comment.parentCommentId
+    )) return null;
+    const comments = allComments
+      .filter((comment) => (comment.parentCommentId || null) === parentCommentId)
+      .sort((a, b) => (
+        Date.parse(b.createdAt || 0) - Date.parse(a.createdAt || 0) ||
+        String(b.id).localeCompare(String(a.id))
+      ));
+    const filteredComments = cursor
+      ? comments.filter((comment) => {
+        const commentTime = Date.parse(comment.createdAt || '');
+        const cursorTime = Date.parse(cursor.createdAt);
+        return commentTime < cursorTime ||
+          (commentTime === cursorTime && String(comment.id) < cursor.id);
+      })
+      : comments;
+    const page = filteredComments.slice(0, limit);
+    const hasMore = filteredComments.length > limit;
+    return {
+      data: page.map(({ authorId, ...comment }) => ({
+        ...comment,
+        replyCount: parentCommentId
+          ? 0
+          : allComments.filter((reply) => reply.parentCommentId === comment.id).length
+      })),
+      hasMore,
+      nextCursor: hasMore && page.length
+        ? { id: page[page.length - 1].id, createdAt: page[page.length - 1].createdAt }
+        : null
+    };
+  }
+
+  addComment(reelId, user, text, userYear, authorId, parentCommentId = null) {
     const reel = this.reels.find(r => r.id === reelId);
     if (!reel) return null;
+    const parent = parentCommentId
+      ? (reel.comments || []).find((comment) =>
+        comment.id === parentCommentId && !comment.parentCommentId
+      )
+      : null;
+    if (parentCommentId && !parent) return null;
     const comment = {
       id: `c_${uuidv4()}`,
       user: user || 'Anonymous Student',
       userYear: userYear || 'Student',
       text,
+      authorId,
+      parentCommentId,
+      replyCount: 0,
       createdAt: new Date().toISOString()
     };
     if (!reel.comments) reel.comments = [];
     reel.comments.unshift(comment);
     reel.commentsCount = reel.comments.length;
     writeJson(REELS_FILE, this.reels);
-    return comment;
+    const recipientId = parent?.authorId;
+    const notification = recipientId && recipientId !== authorId
+      ? this.addUserNotification(recipientId, {
+        type: 'comment_reply',
+        title: `${comment.user} replied to your comment`,
+        message: text.slice(0, 180),
+        reelId,
+        commentId: parentCommentId
+      })
+      : null;
+    const { authorId: _authorId, ...publicComment } = comment;
+    return {
+      comment: publicComment,
+      parentAuthorId: recipientId || null,
+      notification
+    };
+  }
+
+  getUserNotifications(userId, limit = 50) {
+    return this.userNotifications
+      .filter((notification) => notification.userId === userId)
+      .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
+      .slice(0, limit)
+      .map(({ userId: _userId, ...notification }) => notification);
+  }
+
+  countUnreadUserNotifications(userId) {
+    return this.userNotifications.filter((notification) =>
+      notification.userId === userId && !notification.readAt
+    ).length;
+  }
+
+  addUserNotification(userId, notification) {
+    const saved = {
+      id: `notification_${uuidv4()}`,
+      userId,
+      ...notification,
+      createdAt: new Date().toISOString(),
+      readAt: null
+    };
+    this.userNotifications.unshift(saved);
+    return saved;
+  }
+
+  markUserNotificationRead(userId, notificationId = null) {
+    let updated = 0;
+    let found = false;
+    for (const notification of this.userNotifications) {
+      if (notification.userId !== userId) continue;
+      if (notificationId && notification.id !== notificationId) continue;
+      found = true;
+      if (notification.readAt) continue;
+      notification.readAt = new Date().toISOString();
+      updated += 1;
+    }
+    return notificationId ? (found ? 1 : 0) : updated;
   }
 
   countReelComments(reelId) {
     const reel = this.reels.find(item => item.id === reelId);
     return reel ? (reel.comments || []).length : 0;
+  }
+
+  countCommentReplies(parentCommentId) {
+    for (const reel of this.reels) {
+      const count = (reel.comments || []).filter((comment) =>
+        comment.parentCommentId === parentCommentId
+      ).length;
+      if (count) return count;
+    }
+    return 0;
   }
 
   getReel(reelId) {
@@ -718,6 +872,9 @@ class LocalDB {
     const index = this.reels.findIndex(reel => reel.id === reelId);
     if (index < 0) return null;
     const [deletedReel] = this.reels.splice(index, 1);
+    this.userNotifications = this.userNotifications.filter(
+      (notification) => notification.reelId !== reelId
+    );
     writeJson(REELS_FILE, this.reels);
     this.reports = this.reports.filter(report => report.reelId !== reelId);
     writeJson(REPORTS_FILE, this.reports);
@@ -783,8 +940,8 @@ class LocalDB {
     return registration;
   }
 
-  getPushTokens() {
-    return this.pushTokens;
+  getPushTokens(userId = null) {
+    return this.pushTokens.filter((item) => !userId || item.userId === userId);
   }
 
   getNotificationsEnabled() {

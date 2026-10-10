@@ -47,31 +47,60 @@ const REEL_FETCH_MAX_WAIT_MS = 60 * 1000;
 const REEL_FETCH_TIMEOUT_MS = 8 * 1000;
 const REEL_FETCH_RETRY_DELAY_MS = 2 * 1000;
 
-function shuffleReelsByDay(reels) {
+function getReelDayStart(reel) {
+  const createdAt = new Date(reel.createdAt);
+  return Number.isNaN(createdAt.getTime())
+    ? 0
+    : new Date(createdAt.getFullYear(), createdAt.getMonth(), createdAt.getDate()).getTime();
+}
+
+function shuffleReelsByDay(reels, shuffleSeed, previousReels = [], forceDifferentOrder = false) {
   const seenIds = new Set();
   const reelsByDay = new Map();
+  const previousIdsByDay = new Map();
 
   for (const reel of reels) {
     if (reel?.id == null || seenIds.has(String(reel.id))) continue;
     seenIds.add(String(reel.id));
 
-    const createdAt = new Date(reel.createdAt);
-    const dayStart = Number.isNaN(createdAt.getTime())
-      ? 0
-      : new Date(createdAt.getFullYear(), createdAt.getMonth(), createdAt.getDate()).getTime();
+    const dayStart = getReelDayStart(reel);
     const dayReels = reelsByDay.get(dayStart) || [];
     dayReels.push(reel);
     reelsByDay.set(dayStart, dayReels);
   }
 
+  for (const reel of previousReels) {
+    const dayStart = getReelDayStart(reel);
+    const dayIds = previousIdsByDay.get(dayStart) || [];
+    dayIds.push(String(reel.id));
+    previousIdsByDay.set(dayStart, dayIds);
+  }
+
   return Array.from(reelsByDay.entries())
     .sort(([dayA], [dayB]) => dayB - dayA)
-    .flatMap(([, dayReels]) => {
-      for (let index = dayReels.length - 1; index > 0; index -= 1) {
-        const swapIndex = Math.floor(Math.random() * (index + 1));
-        [dayReels[index], dayReels[swapIndex]] = [dayReels[swapIndex], dayReels[index]];
+    .flatMap(([dayStart, dayReels]) => {
+      const shuffledReels = dayReels
+        .map((reel) => {
+          let sortKey = 2166136261;
+          const seed = `${reel.id}:${dayStart}:${shuffleSeed}`;
+          for (let index = 0; index < seed.length; index += 1) {
+            sortKey = Math.imul(sortKey ^ seed.charCodeAt(index), 16777619);
+          }
+          return { reel, sortKey: sortKey >>> 0 };
+        })
+        .sort((a, b) => a.sortKey - b.sortKey || String(a.reel.id).localeCompare(String(b.reel.id)))
+        .map(({ reel }) => reel);
+
+      if (forceDifferentOrder && shuffledReels.length > 1) {
+        const previousIds = previousIdsByDay.get(dayStart) || [];
+        const hasSameIds = previousIds.length === shuffledReels.length &&
+          shuffledReels.every((reel) => previousIds.includes(String(reel.id)));
+        const hasSameOrder = hasSameIds &&
+          shuffledReels.every((reel, index) => String(reel.id) === previousIds[index]);
+        if (hasSameOrder) shuffledReels.push(shuffledReels.shift());
       }
-      return dayReels;
+
+      return shuffledReels;
     });
 }
 
@@ -631,6 +660,41 @@ function VideoStoryEditor({
   );
 }
 
+function ActiveReelVideo({ videoUrl, isMuted, isPaused }) {
+  const player = useVideoPlayer(videoUrl, (videoPlayer) => {
+    videoPlayer.loop = true;
+    videoPlayer.muted = isMuted;
+    if (isPaused) {
+      videoPlayer.pause();
+    } else {
+      videoPlayer.play();
+    }
+  });
+
+  useEffect(() => {
+    player.muted = isMuted;
+  }, [isMuted, player]);
+
+  useEffect(() => {
+    if (isPaused) {
+      player.pause();
+    } else {
+      player.play();
+    }
+  }, [isPaused, player]);
+
+  return (
+    <VideoView
+      style={StyleSheet.absoluteFill}
+      player={player}
+      allowsFullscreen={false}
+      allowsPictureInPicture={false}
+      contentFit="cover"
+      nativeControls={false}
+    />
+  );
+}
+
 // Individual Reel Component
 function ReelItem({
   item,
@@ -646,44 +710,10 @@ function ReelItem({
   const [isPaused, setIsPaused] = useState(false);
   const playbackFeedback = useRef(new Animated.Value(0));
 
-  const player = useVideoPlayer(item.videoUrl, (p) => {
-    p.loop = true;
-    p.muted = isMuted;
-    if (isActive && isTabActive && !isPaused) {
-      p.play();
-    } else {
-      p.pause();
-    }
-  });
-
-  useEffect(() => {
-    if (!player) return;
-    if (isActive && isTabActive && !isPaused) {
-      try {
-        player.currentTime = 0;
-      } catch (e) {}
-      player.play();
-    } else {
-      player.pause();
-    }
-  }, [isActive, isTabActive, isPaused, player]);
-
-  useEffect(() => {
-    if (!player) return;
-    player.muted = isMuted;
-  }, [isMuted, player]);
-
   useEffect(() => () => playbackFeedback.current.stopAnimation(), []);
 
   const togglePlayPause = () => {
-    if (!player) return;
-    if (isPaused) {
-      setIsPaused(false);
-      player.play();
-    } else {
-      setIsPaused(true);
-      player.pause();
-    }
+    setIsPaused((paused) => !paused);
     playbackFeedback.current.stopAnimation();
     playbackFeedback.current.setValue(0);
     Animated.sequence([
@@ -703,14 +733,15 @@ function ReelItem({
 
   return (
     <View style={[styles.reelContainer, { height: height }]}>
-      <VideoView
-        style={StyleSheet.absoluteFill}
-        player={player}
-        allowsFullscreen={false}
-        allowsPictureInPicture={false}
-        contentFit="cover"
-        nativeControls={false}
-      />
+      {isActive && isTabActive ? (
+        <ActiveReelVideo
+          videoUrl={item.videoUrl}
+          isMuted={isMuted}
+          isPaused={isPaused}
+        />
+      ) : (
+        <View style={[StyleSheet.absoluteFill, { backgroundColor: '#000000' }]} />
+      )}
 
       {/* Tap anywhere on video to Play / Pause */}
       <TouchableOpacity
@@ -1007,6 +1038,7 @@ export default function LeelaReelsScreen({
   authToken,
   isTabActive = true,
   reelIdToOpen = null,
+  commentIdToOpen = null,
   onReelOpened,
   onEnsureVisible
 }) {
@@ -1017,8 +1049,18 @@ export default function LeelaReelsScreen({
   const [loading, setLoading] = useState(true);
   const [reelsFetchFailed, setReelsFetchFailed] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [loadingMoreReels, setLoadingMoreReels] = useState(false);
+  const [hasMoreReels, setHasMoreReels] = useState(false);
+  const [reelPageCursor, setReelPageCursor] = useState(null);
   const [reelHeight, setReelHeight] = useState(REEL_HEIGHT);
   const fetchRequestRef = useRef(null);
+  const fetchGenerationRef = useRef(0);
+  const reelsRef = useRef(reels);
+  const activeReelIdRef = useRef(null);
+  const shouldRestoreReelPositionRef = useRef(false);
+  const feedShuffleSeedRef = useRef(Date.now());
+  const reelOpenFetchRef = useRef(null);
+  const openedCommentRequestRef = useRef(null);
 
   const handleContainerLayout = (e) => {
     const { height } = e.nativeEvent.layout;
@@ -1030,10 +1072,25 @@ export default function LeelaReelsScreen({
   // Comments modal state
   const [commentsModalVisible, setCommentsModalVisible] = useState(false);
   const [selectedReel, setSelectedReel] = useState(null);
+  const selectedReelIdRef = useRef(null);
+  selectedReelIdRef.current = selectedReel?.id || null;
   const [reelToReport, setReelToReport] = useState(null);
   const [reportSubmitting, setReportSubmitting] = useState(false);
   const [commentText, setCommentText] = useState('');
   const [commentPosting, setCommentPosting] = useState(false);
+  const [commentItems, setCommentItems] = useState([]);
+  const [commentPageCursor, setCommentPageCursor] = useState(null);
+  const [hasMoreComments, setHasMoreComments] = useState(false);
+  const [loadingComments, setLoadingComments] = useState(false);
+  const [commentLoadError, setCommentLoadError] = useState('');
+  const commentsListRef = useRef(null);
+  const [replyingTo, setReplyingTo] = useState(null);
+  const [expandedComments, setExpandedComments] = useState({});
+  const expandedCommentsRef = useRef(expandedComments);
+  expandedCommentsRef.current = expandedComments;
+  const [repliesByComment, setRepliesByComment] = useState({});
+  const [replyPages, setReplyPages] = useState({});
+  const [loadingReplies, setLoadingReplies] = useState({});
   const [commentAgeNow, setCommentAgeNow] = useState(Date.now());
   const [isCommentKeyboardVisible, setIsCommentKeyboardVisible] = useState(false);
   const likeQueuesRef = useRef(new Map());
@@ -1055,14 +1112,23 @@ export default function LeelaReelsScreen({
   }, [isTabActive]);
 
   // Fetch reels from backend
-  const fetchReels = ({ waitForServer = true } = {}) => {
-    if (fetchRequestRef.current) return fetchRequestRef.current;
+  const fetchReels = ({
+    waitForServer = true,
+    force = false,
+    reshuffle = false,
+    cursor = null,
+    append = false
+  } = {}) => {
+    if (fetchRequestRef.current && !force) return fetchRequestRef.current;
 
+    const requestGeneration = fetchGenerationRef.current + 1;
+    fetchGenerationRef.current = requestGeneration;
     const request = (async () => {
       const deadline = Date.now() + (waitForServer ? REEL_FETCH_MAX_WAIT_MS : REEL_FETCH_TIMEOUT_MS);
       let lastError;
-      setReelsFetchFailed(false);
-      if (reels.length === 0) setLoading(true);
+      if (!append) setReelsFetchFailed(false);
+      if (append) setLoadingMoreReels(true);
+      if (reelsRef.current.length === 0) setLoading(true);
 
       try {
         while (Date.now() < deadline) {
@@ -1074,21 +1140,59 @@ export default function LeelaReelsScreen({
           );
 
           try {
-            const res = await fetch(`${getBaseUrl(serverHost)}/api/reels`, {
+            const query = new URLSearchParams({ limit: '10' });
+            if (cursor) query.set('cursor', cursor);
+            const res = await fetch(`${getBaseUrl(serverHost)}/api/reels?${query.toString()}`, {
               headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
               signal: controller.signal
             });
             const data = await res.json();
+            if (requestGeneration !== fetchGenerationRef.current) return;
             if (!res.ok || !data.success) {
               const error = new Error(data.message || `Could not load reels (HTTP ${res.status}).`);
               error.statusCode = res.status;
               throw error;
             }
             if (!Array.isArray(data.data)) throw new Error('Could not load reels.');
-            setReels(shuffleReelsByDay(data.data));
+            const orderedReels = shuffleReelsByDay(
+              data.data,
+              feedShuffleSeedRef.current,
+              append ? [] : reelsRef.current,
+              reshuffle
+            );
+            const retainedReels = append || !reshuffle
+              ? reelsRef.current.filter(
+                (existing) => !orderedReels.some((reel) => reel.id === existing.id)
+              )
+              : [];
+            const combinedReels = append
+              ? [...reelsRef.current, ...orderedReels.filter(
+                (reel) => !reelsRef.current.some((existing) => existing.id === reel.id)
+              )]
+              : [...orderedReels, ...retainedReels];
+            const currentReelIndex = activeReelIdRef.current == null
+              ? -1
+              : combinedReels.findIndex(
+                (reel) => String(reel.id) === activeReelIdRef.current
+              );
+            const nextActiveIndex = currentReelIndex >= 0 ? currentReelIndex : 0;
+            if (currentReelIndex < 0) {
+              activeReelIdRef.current = combinedReels[0] ? String(combinedReels[0].id) : null;
+            }
+            reelsRef.current = combinedReels;
+            setReels(combinedReels);
+            setHasMoreReels(Boolean(data.hasMore));
+            setReelPageCursor(data.nextCursor || null);
+            setActiveReelIndex((previousIndex) => {
+              if (previousIndex !== nextActiveIndex) {
+                shouldRestoreReelPositionRef.current = true;
+              }
+              return nextActiveIndex;
+            });
             setReelsFetchFailed(false);
             return;
           } catch (err) {
+            if (requestGeneration !== fetchGenerationRef.current) return;
             lastError = err;
             if (err.statusCode >= 400 && err.statusCode < 500) break;
           } finally {
@@ -1101,14 +1205,21 @@ export default function LeelaReelsScreen({
           }
         }
 
-        setReelsFetchFailed(true);
-        console.log('Error fetching reels from server:', lastError?.message || 'Connection timed out.');
+        if (requestGeneration === fetchGenerationRef.current) {
+          if (!append) setReelsFetchFailed(true);
+          console.log('Error fetching reels from server:', lastError?.message || 'Connection timed out.');
+        }
       } finally {
-        setLoading(false);
-        setRefreshing(false);
+        if (requestGeneration === fetchGenerationRef.current) {
+          setLoading(false);
+          setRefreshing(false);
+          setLoadingMoreReels(false);
+        }
       }
     })().finally(() => {
-      fetchRequestRef.current = null;
+      if (requestGeneration === fetchGenerationRef.current) {
+        fetchRequestRef.current = null;
+      }
     });
 
     fetchRequestRef.current = request;
@@ -1118,6 +1229,15 @@ export default function LeelaReelsScreen({
   useEffect(() => {
     fetchReels();
   }, [serverHost, authToken, isTabActive]);
+
+  useEffect(() => {
+    if (!shouldRestoreReelPositionRef.current) return undefined;
+    shouldRestoreReelPositionRef.current = false;
+    const frame = requestAnimationFrame(() => {
+      reelsListRef.current?.scrollToIndex({ index: activeReelIndex, animated: false });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [activeReelIndex, reels]);
 
   useEffect(() => {
     if (!authToken) return undefined;
@@ -1149,30 +1269,49 @@ export default function LeelaReelsScreen({
       ) return;
 
       const confirmedComment = { ...event.comment, pending: false };
-      const updateReelComments = (reel) => {
-        if (reel.id !== event.reelId) return reel;
-        const comments = Array.isArray(reel.comments) ? reel.comments : [];
-        const pendingIndex = event.clientMutationId
-          ? comments.findIndex((comment) => comment.id === event.clientMutationId)
-          : -1;
-        const alreadyPresent = comments.some((comment) => comment.id === confirmedComment.id);
-        let updatedComments = comments;
-        if (pendingIndex >= 0) {
-          updatedComments = comments.map((comment, index) => (
-            index === pendingIndex ? confirmedComment : comment
-          ));
-        } else if (!alreadyPresent) {
-          updatedComments = [confirmedComment, ...comments];
-        }
-        return {
-          ...reel,
-          comments: updatedComments,
-          commentsCount: event.commentsCount
-        };
-      };
+      setReels((prev) => prev.map((reel) => (
+        reel.id === event.reelId ? { ...reel, commentsCount: event.commentsCount } : reel
+      )));
+      setSelectedReel((prev) => prev?.id === event.reelId
+        ? { ...prev, commentsCount: event.commentsCount }
+        : prev);
 
-      setReels((prev) => prev.map(updateReelComments));
-      setSelectedReel((prev) => prev ? updateReelComments(prev) : prev);
+      if (selectedReelIdRef.current !== event.reelId) return;
+      const parentId = confirmedComment.parentCommentId || null;
+      if (parentId) {
+        setCommentItems((prev) => prev.map((comment) => (
+          comment.id === parentId
+            ? { ...comment, replyCount: event.parentReplyCount ?? comment.replyCount }
+            : comment
+        )));
+        if (expandedCommentsRef.current[parentId]) {
+          setRepliesByComment((prev) => {
+            const replies = prev[parentId] || [];
+            const pendingIndex = event.clientMutationId
+              ? replies.findIndex((reply) => reply.id === event.clientMutationId)
+              : -1;
+            if (pendingIndex >= 0) {
+              return {
+                ...prev,
+                [parentId]: replies.map((reply, index) => index === pendingIndex ? confirmedComment : reply)
+              };
+            }
+            if (replies.some((reply) => reply.id === confirmedComment.id)) return prev;
+            return { ...prev, [parentId]: [confirmedComment, ...replies] };
+          });
+        }
+      } else {
+        setCommentItems((prev) => {
+          const pendingIndex = event.clientMutationId
+            ? prev.findIndex((comment) => comment.id === event.clientMutationId)
+            : -1;
+          if (pendingIndex >= 0) {
+            return prev.map((comment, index) => index === pendingIndex ? confirmedComment : comment);
+          }
+          if (prev.some((comment) => comment.id === confirmedComment.id)) return prev;
+          return [confirmedComment, ...prev];
+        });
+      }
     });
 
     return () => {
@@ -1188,19 +1327,65 @@ export default function LeelaReelsScreen({
     if (reelsFetchFailed) {
       Alert.alert('Could not open reel', 'Could not load reels. Check your connection and try again.');
     } else if (reelIndex === -1) {
-      Alert.alert('Reel unavailable', 'This reel is no longer available.');
+      if (reelOpenFetchRef.current === String(reelIdToOpen)) return;
+      reelOpenFetchRef.current = String(reelIdToOpen);
+      void (async () => {
+        try {
+          const response = await fetch(
+            `${getBaseUrl(serverHost)}/api/reel/${encodeURIComponent(reelIdToOpen)}`,
+            { headers: authToken ? { Authorization: 'Bearer ' + authToken } : {} }
+          );
+          const result = await response.json();
+          if (!response.ok || !result.success || !result.data) {
+            throw new Error(result.message || 'This reel is no longer available.');
+          }
+          const updatedReels = reelsRef.current.some((reel) => reel.id === result.data.id)
+            ? reelsRef.current
+            : [result.data, ...reelsRef.current];
+          reelsRef.current = updatedReels;
+          setReels(updatedReels);
+        } catch (error) {
+          reelOpenFetchRef.current = null;
+          Alert.alert('Reel unavailable', error.message || 'This reel is no longer available.');
+          onReelOpened?.(reelIdToOpen);
+        }
+      })();
+      return;
     } else {
+      activeReelIdRef.current = String(reels[reelIndex].id);
       setActiveReelIndex(reelIndex);
       reelsListRef.current?.scrollToIndex({ index: reelIndex, animated: false });
+      if (
+        commentIdToOpen &&
+        openedCommentRequestRef.current !== `${reelIdToOpen}:${commentIdToOpen}`
+      ) {
+        openedCommentRequestRef.current = `${reelIdToOpen}:${commentIdToOpen}`;
+        handleOpenComments(reels[reelIndex], String(commentIdToOpen));
+      }
     }
     onReelOpened?.(reelIdToOpen);
-  }, [isTabActive, loading, onReelOpened, reelIdToOpen, reels, reelsFetchFailed, refreshing]);
+  }, [
+    authToken,
+    commentIdToOpen,
+    isTabActive,
+    loading,
+    onReelOpened,
+    reelIdToOpen,
+    reels,
+    reelsFetchFailed,
+    refreshing,
+    serverHost
+  ]);
 
   const handleRefresh = () => {
+    feedShuffleSeedRef.current += 1;
+    activeReelIdRef.current = null;
+    setHasMoreReels(false);
+    setReelPageCursor(null);
     setRefreshing(true);
     setActiveReelIndex(0);
     reelsListRef.current?.scrollToOffset({ offset: 0, animated: false });
-    fetchReels();
+    fetchReels({ force: true, reshuffle: true });
   };
 
   const handleLike = (reelId) => {
@@ -1268,10 +1453,128 @@ export default function LeelaReelsScreen({
     likeQueuesRef.current.set(reelId, queue);
   };
 
-  const handleOpenComments = (reel) => {
+  const loadCommentsPage = async (reelId, {
+    parentCommentId = null,
+    cursor = null,
+    append = false
+  } = {}) => {
+    if (parentCommentId) {
+      setLoadingReplies((prev) => ({ ...prev, [parentCommentId]: true }));
+    } else {
+      setLoadingComments(true);
+      setCommentLoadError('');
+    }
+    try {
+      const query = new URLSearchParams({ limit: '20' });
+      if (parentCommentId) query.set('parentCommentId', parentCommentId);
+      if (cursor) query.set('cursor', cursor);
+      const response = await fetch(
+        `${getBaseUrl(serverHost)}/api/reels/${encodeURIComponent(reelId)}/comments?${query.toString()}`,
+        { headers: { Authorization: 'Bearer ' + authToken } }
+      );
+      const result = await response.json();
+      if (!response.ok || !result.success || !Array.isArray(result.data)) {
+        throw new Error(result.message || 'Could not load comments.');
+      }
+
+      if (parentCommentId) {
+        setRepliesByComment((prev) => {
+          const currentReplies = prev[parentCommentId] || [];
+          const nextReplies = append
+            ? [...currentReplies, ...result.data.filter(
+              (reply) => !currentReplies.some((current) => current.id === reply.id)
+            )]
+            : result.data;
+          return { ...prev, [parentCommentId]: nextReplies };
+        });
+        setReplyPages((prev) => ({
+          ...prev,
+          [parentCommentId]: {
+            hasMore: Boolean(result.hasMore),
+            cursor: result.nextCursor || null
+          }
+        }));
+      } else {
+        setCommentItems((prev) => append
+          ? [...prev, ...result.data.filter((comment) => !prev.some((current) => current.id === comment.id))]
+          : result.data
+        );
+        setCommentPageCursor(result.nextCursor || null);
+        setHasMoreComments(Boolean(result.hasMore));
+      }
+      return result;
+    } catch (error) {
+      if (!parentCommentId) setCommentLoadError(error.message || 'Could not load comments.');
+      throw error;
+    } finally {
+      if (parentCommentId) {
+        setLoadingReplies((prev) => ({ ...prev, [parentCommentId]: false }));
+      } else {
+        setLoadingComments(false);
+      }
+    }
+  };
+
+  const handleOpenComments = (reel, focusCommentId = null) => {
     setCommentAgeNow(Date.now());
     setSelectedReel(reel);
+    setCommentItems([]);
+    setCommentPageCursor(null);
+    setHasMoreComments(false);
+    setCommentLoadError('');
+    setReplyingTo(null);
+    setExpandedComments({});
+    setRepliesByComment({});
+    setReplyPages({});
     setCommentsModalVisible(true);
+    loadCommentsPage(reel.id).then(async (firstPage) => {
+      if (!focusCommentId) return;
+      let loaded = firstPage.data;
+      let cursor = firstPage.nextCursor;
+      while (cursor && !loaded.some((comment) => comment.id === focusCommentId)) {
+        const nextPage = await loadCommentsPage(reel.id, { cursor, append: true });
+        loaded = [...loaded, ...nextPage.data];
+        cursor = nextPage.nextCursor;
+      }
+      if (!loaded.some((comment) => comment.id === focusCommentId)) return;
+      setExpandedComments((prev) => ({ ...prev, [focusCommentId]: true }));
+      await loadCommentsPage(reel.id, { parentCommentId: focusCommentId });
+      const index = loaded.findIndex((comment) => comment.id === focusCommentId);
+      requestAnimationFrame(() => commentsListRef.current?.scrollToIndex({ index, animated: true }));
+    }).catch((error) => {
+      console.warn('[Comments] Could not load the first comment page:', error.message);
+    });
+  };
+
+  const handleLoadMoreComments = () => {
+    if (!selectedReel || !hasMoreComments || loadingComments) return;
+    loadCommentsPage(selectedReel.id, {
+      cursor: commentPageCursor,
+      append: true
+    }).catch((error) => {
+      console.warn('[Comments] Could not load more comments:', error.message);
+    });
+  };
+
+  const handleToggleReplies = (comment) => {
+    const expanded = Boolean(expandedComments[comment.id]);
+    setExpandedComments((prev) => ({ ...prev, [comment.id]: !expanded }));
+    if (!expanded && !repliesByComment[comment.id]) {
+      loadCommentsPage(selectedReel.id, { parentCommentId: comment.id }).catch((error) => {
+        console.warn('[Comments] Could not load replies:', error.message);
+        Alert.alert('Could not load replies', error.message || 'Please try again.');
+      });
+    }
+  };
+
+  const handleLoadMoreReplies = (commentId) => {
+    const page = replyPages[commentId];
+    if (!page?.hasMore || loadingReplies[commentId]) return;
+    loadCommentsPage(selectedReel.id, {
+      parentCommentId: commentId,
+      cursor: page.cursor,
+      append: true
+    }).catch((error) => Alert.alert('Could not load replies', error.message || 'Please try again.'));
   };
 
   useEffect(() => {
@@ -1301,21 +1604,36 @@ export default function LeelaReelsScreen({
     if (!text || !selectedReel || commentPosting) return;
     const reelId = selectedReel.id;
     const userYear = currentUser?.academicYear || 'Student';
+    const parentComment = replyingTo;
     const optimisticComment = {
-      id: `pending_${Date.now()}`,
+      id: `pending_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       user: currentUser?.leelaUsername || 'Student',
       userYear,
       text,
+      parentCommentId: parentComment?.id || null,
+      replyCount: 0,
       createdAt: new Date().toISOString(),
       pending: true
     };
-    const updatedComments = [optimisticComment, ...(selectedReel.comments || [])];
+    if (parentComment) {
+      setRepliesByComment((prev) => ({
+        ...prev,
+        [parentComment.id]: [optimisticComment, ...(prev[parentComment.id] || [])]
+      }));
+      setCommentItems((prev) => prev.map((comment) => (
+        comment.id === parentComment.id
+          ? { ...comment, replyCount: (Number(comment.replyCount) || 0) + 1 }
+          : comment
+      )));
+    } else {
+      setCommentItems((prev) => [optimisticComment, ...prev]);
+    }
     setSelectedReel((prev) => prev?.id === reelId
-      ? { ...prev, comments: updatedComments, commentsCount: (Number(prev.commentsCount) || 0) + 1 }
+      ? { ...prev, commentsCount: (Number(prev.commentsCount) || 0) + 1 }
       : prev);
     setReels((prev) => prev.map((reel) => (
       reel.id === reelId
-        ? { ...reel, comments: updatedComments, commentsCount: (Number(reel.commentsCount) || 0) + 1 }
+        ? { ...reel, commentsCount: (Number(reel.commentsCount) || 0) + 1 }
         : reel
     )));
     setCommentText('');
@@ -1330,6 +1648,7 @@ export default function LeelaReelsScreen({
           },
           body: JSON.stringify({
             text,
+            parentCommentId: parentComment?.id,
             clientMutationId: optimisticComment.id
           })
         });
@@ -1338,37 +1657,56 @@ export default function LeelaReelsScreen({
           throw new Error(result.message || 'Could not save your comment.');
         }
         const confirmedComment = { ...result.data, pending: false };
-        setSelectedReel((prev) => prev?.id === reelId ? {
-          ...prev,
-          comments: (prev.comments || []).map((comment) => (
-            comment.id === optimisticComment.id ? confirmedComment : comment
-          )),
-          commentsCount: result.commentsCount
-        } : prev);
+        if (parentComment) {
+          setRepliesByComment((prev) => {
+            const replies = prev[parentComment.id] || [];
+            if (replies.some((reply) => reply.id === confirmedComment.id)) return prev;
+            return {
+              ...prev,
+              [parentComment.id]: replies.map((reply) => (
+                reply.id === optimisticComment.id ? confirmedComment : reply
+              ))
+            };
+          });
+        } else {
+          setCommentItems((prev) => {
+            if (prev.some((comment) => comment.id === confirmedComment.id)) return prev;
+            return prev.map((comment) => (
+              comment.id === optimisticComment.id ? confirmedComment : comment
+            ));
+          });
+        }
+        setSelectedReel((prev) => prev?.id === reelId
+          ? { ...prev, commentsCount: result.commentsCount }
+          : prev);
         setReels((prev) => prev.map((reel) => (
           reel.id === reelId
-            ? {
-              ...reel,
-              comments: (reel.comments || []).map((comment) => (
-                comment.id === optimisticComment.id ? confirmedComment : comment
-              )),
-              commentsCount: result.commentsCount
-            }
+            ? { ...reel, commentsCount: result.commentsCount }
             : reel
         )));
+        setReplyingTo(null);
       } catch (error) {
+        if (parentComment) {
+          setRepliesByComment((prev) => ({
+            ...prev,
+            [parentComment.id]: (prev[parentComment.id] || [])
+              .filter((reply) => reply.id !== optimisticComment.id)
+          }));
+          setCommentItems((prev) => prev.map((comment) => (
+            comment.id === parentComment.id
+              ? { ...comment, replyCount: Math.max(0, (Number(comment.replyCount) || 1) - 1) }
+              : comment
+          )));
+        } else {
+          setCommentItems((prev) => prev.filter((comment) => comment.id !== optimisticComment.id));
+        }
         setSelectedReel((prev) => prev?.id === reelId ? {
           ...prev,
-          comments: (prev.comments || []).filter((comment) => comment.id !== optimisticComment.id),
           commentsCount: Math.max(0, (Number(prev.commentsCount) || 1) - 1)
         } : prev);
         setReels((prev) => prev.map((reel) => (
           reel.id === reelId
-            ? {
-              ...reel,
-              comments: (reel.comments || []).filter((comment) => comment.id !== optimisticComment.id),
-              commentsCount: Math.max(0, (Number(reel.commentsCount) || 1) - 1)
-            }
+            ? { ...reel, commentsCount: Math.max(0, (Number(reel.commentsCount) || 1) - 1) }
             : reel
         )));
         setCommentText((currentText) => currentText || text);
@@ -1433,6 +1771,7 @@ export default function LeelaReelsScreen({
 
   const handleRecordVideoWithCamera = async () => {
     try {
+      setPickerModalVisible(false);
       const perm = await ImagePicker.requestCameraPermissionsAsync();
       if (!perm.granted) {
         Alert.alert('Permission Required', 'Camera permission is needed to record reels.');
@@ -1440,7 +1779,7 @@ export default function LeelaReelsScreen({
       }
 
       const res = await ImagePicker.launchCameraAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Videos,
+        mediaTypes: ['videos'],
         quality: 0.8,
         videoMaxDuration: MAX_REEL_DURATION_SECONDS
       });
@@ -1458,6 +1797,7 @@ export default function LeelaReelsScreen({
 
   const handlePickVideoFromGallery = async () => {
     try {
+      setPickerModalVisible(false);
       const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (!perm.granted) {
         Alert.alert('Permission Required', 'Gallery access is needed to select videos.');
@@ -1465,7 +1805,7 @@ export default function LeelaReelsScreen({
       }
 
       const res = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Videos,
+        mediaTypes: ['videos'],
         quality: 0.8
       });
 
@@ -1589,7 +1929,11 @@ export default function LeelaReelsScreen({
 
   const onViewableItemsChanged = useRef(({ viewableItems }) => {
     if (viewableItems && viewableItems.length > 0) {
-      setActiveReelIndex(viewableItems[0].index || 0);
+      const visibleItem = viewableItems.find(
+        (token) => String(token.item.id) === activeReelIdRef.current
+      ) || viewableItems[0];
+      activeReelIdRef.current = String(visibleItem.item.id);
+      setActiveReelIndex(visibleItem.index || 0);
     }
   }).current;
 
@@ -1700,13 +2044,25 @@ export default function LeelaReelsScreen({
           })}
           onRefresh={handleRefresh}
           refreshing={refreshing}
+          onEndReached={() => {
+            if (hasMoreReels && !loadingMoreReels && reelPageCursor) {
+              fetchReels({ waitForServer: false, cursor: reelPageCursor, append: true });
+            }
+          }}
+          onEndReachedThreshold={0.6}
+          ListFooterComponent={loadingMoreReels ? (
+            <ActivityIndicator style={{ paddingVertical: 18 }} color="#f472b6" />
+          ) : null}
+          initialNumToRender={1}
+          maxToRenderPerBatch={1}
+          windowSize={3}
           onViewableItemsChanged={onViewableItemsChanged}
           viewabilityConfig={{ itemVisiblePercentThreshold: 75 }}
           renderItem={({ item, index }) => (
             <ReelItem
               item={item}
               isActive={index === activeReelIndex}
-              isTabActive={isTabActive && !storyEditorVisible}
+              isTabActive={isTabActive && !pickerModalVisible && !storyEditorVisible}
               isMuted={isMuted}
               height={reelHeight}
               onLike={handleLike}
@@ -1741,11 +2097,21 @@ export default function LeelaReelsScreen({
             </View>
 
             <FlatList
+              ref={commentsListRef}
               style={styles.commentsList}
-              data={selectedReel?.comments || []}
+              data={commentItems}
               keyExtractor={(item) => item.id}
               contentContainerStyle={{ paddingVertical: 10 }}
               keyboardShouldPersistTaps="handled"
+              onEndReached={handleLoadMoreComments}
+              onEndReachedThreshold={0.4}
+              ListFooterComponent={loadingComments ? (
+                <ActivityIndicator style={{ paddingVertical: 14 }} color="#f472b6" />
+              ) : hasMoreComments ? (
+                <TouchableOpacity onPress={handleLoadMoreComments} style={styles.loadMoreCommentsButton}>
+                  <Text style={styles.replyActionText}>Load older comments</Text>
+                </TouchableOpacity>
+              ) : null}
               renderItem={({ item }) => (
                 <View style={styles.commentRow}>
                   <View style={styles.commentAvatar}>
@@ -1768,12 +2134,61 @@ export default function LeelaReelsScreen({
                       </Text>
                     </View>
                     <Text style={styles.commentContent}>{item.text}</Text>
+                    <View style={styles.commentActions}>
+                      <TouchableOpacity
+                        onPress={() => {
+                          setReplyingTo({ id: item.id, user: item.user });
+                          setExpandedComments((prev) => ({ ...prev, [item.id]: true }));
+                          if (!repliesByComment[item.id]) {
+                            loadCommentsPage(selectedReel.id, { parentCommentId: item.id }).catch((error) => {
+                              console.warn('[Comments] Could not load replies:', error.message);
+                            });
+                          }
+                        }}
+                        disabled={item.pending}
+                      >
+                        <Text style={styles.replyActionText}>Reply</Text>
+                      </TouchableOpacity>
+                      {item.replyCount > 0 && (
+                        <TouchableOpacity onPress={() => handleToggleReplies(item)}>
+                          <Text style={styles.replyActionText}>
+                            {expandedComments[item.id] ? 'Hide replies' : `View ${item.replyCount} ${item.replyCount === 1 ? 'reply' : 'replies'}`}
+                          </Text>
+                        </TouchableOpacity>
+                      )}
+                    </View>
+                    {expandedComments[item.id] && (
+                      <View style={styles.repliesList}>
+                        {(repliesByComment[item.id] || []).map((reply) => (
+                          <View key={reply.id} style={styles.replyRow}>
+                            <Text style={styles.commentUser}>{reply.user}</Text>
+                            <Text style={[styles.commentTime, reply.pending && styles.pendingCommentTime]}>
+                              {reply.pending ? 'Sending…' : formatCommentAge(reply.createdAt, commentAgeNow)}
+                            </Text>
+                            <Text style={styles.commentContent}>{reply.text}</Text>
+                          </View>
+                        ))}
+                        {loadingReplies[item.id] && (
+                          <ActivityIndicator style={{ paddingVertical: 8 }} color="#f472b6" />
+                        )}
+                        {replyPages[item.id]?.hasMore && (
+                          <TouchableOpacity
+                            onPress={() => handleLoadMoreReplies(item.id)}
+                            style={styles.loadMoreCommentsButton}
+                          >
+                            <Text style={styles.replyActionText}>Load older replies</Text>
+                          </TouchableOpacity>
+                        )}
+                      </View>
+                    )}
                   </View>
                 </View>
               )}
               ListEmptyComponent={
                 <Text style={styles.noCommentsText}>
-                  No comments yet. Be the first to drop a comment!
+                  {loadingComments
+                    ? 'Loading comments…'
+                    : commentLoadError || 'No comments yet. Be the first to drop a comment!'}
                 </Text>
               }
             />
@@ -1785,10 +2200,18 @@ export default function LeelaReelsScreen({
                 isCommentKeyboardVisible && styles.commentKeyboardLift
               ]}
             >
+              {replyingTo && (
+                <View style={styles.replyingToBanner}>
+                  <Text style={styles.replyingToText}>Replying to {replyingTo.user}</Text>
+                  <TouchableOpacity onPress={() => setReplyingTo(null)}>
+                    <Ionicons name="close-circle" size={19} color="#cbd5e1" />
+                  </TouchableOpacity>
+                </View>
+              )}
               <View style={styles.addCommentBar}>
                 <TextInput
                   style={styles.commentInput}
-                  placeholder="Add comment..."
+                  placeholder={replyingTo ? `Reply to ${replyingTo.user}...` : 'Add comment...'}
                   placeholderTextColor="#64748b"
                   value={commentText}
                   onChangeText={setCommentText}
@@ -1798,7 +2221,9 @@ export default function LeelaReelsScreen({
                   onPress={handlePostComment}
                   disabled={!commentText.trim() || commentPosting}
                 >
-                  <Text style={styles.postButtonText}>{commentPosting ? 'Posting...' : 'Post'}</Text>
+                  <Text style={styles.postButtonText}>
+                    {commentPosting ? 'Posting...' : replyingTo ? 'Reply' : 'Post'}
+                  </Text>
                 </TouchableOpacity>
               </View>
             </View>
@@ -1900,7 +2325,7 @@ export default function LeelaReelsScreen({
           if (!uploading) setStoryEditorVisible(false);
         }}
       >
-        {selectedVideoUri && (
+        {storyEditorVisible && selectedVideoUri && (
           <VideoStoryEditor
             videoUri={selectedVideoUri}
             currentUser={currentUser}
@@ -2327,6 +2752,41 @@ const styles = StyleSheet.create({
     color: '#e2e8f0',
     fontSize: 13,
     marginTop: 2
+  },
+  commentActions: {
+    flexDirection: 'row',
+    gap: 16,
+    marginTop: 7
+  },
+  replyActionText: {
+    color: '#f472b6',
+    fontSize: 12,
+    fontWeight: '600'
+  },
+  repliesList: {
+    marginTop: 8,
+    marginLeft: 6,
+    paddingLeft: 10,
+    borderLeftWidth: 1,
+    borderLeftColor: '#30364a'
+  },
+  replyRow: {
+    marginVertical: 6
+  },
+  loadMoreCommentsButton: {
+    alignItems: 'center',
+    paddingVertical: 12
+  },
+  replyingToBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 4,
+    paddingTop: 8
+  },
+  replyingToText: {
+    color: '#cbd5e1',
+    fontSize: 12
   },
   noCommentsText: {
     color: '#64748b',

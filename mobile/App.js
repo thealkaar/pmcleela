@@ -63,18 +63,64 @@ function AppContent() {
   const [isInitializing, setIsInitializing] = useState(true);
   const [currentTab, setCurrentTab] = useState('pmc'); // 'pmc' | 'leela' | 'me'
   const [pendingReelId, setPendingReelId] = useState(null);
+  const [pendingCommentId, setPendingCommentId] = useState(null);
   const [notificationOpenRequest, setNotificationOpenRequest] = useState(0);
   const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
   const [pushRegistrationStatus, setPushRegistrationStatus] = useState('idle');
   const [pushRegistrationError, setPushRegistrationError] = useState('');
   const [serverHost, setServerHost] = useState(DEFAULT_HOST);
   const [activeChatPartner, setActiveChatPartner] = useState(null);
+  const currentTabRef = React.useRef(currentTab);
   const tabTransitionOpacity = React.useRef(new Animated.Value(1)).current;
+  const tabTransitionOffset = React.useRef(new Animated.Value(0)).current;
   const tabTransitionId = React.useRef(0);
   const interfaceTransitionOpacity = React.useRef(new Animated.Value(0)).current;
   const handledNotificationResponse = React.useRef(null);
   const pushRegistrationInFlight = React.useRef(false);
   const pushRegistrationSuccessKey = React.useRef(null);
+
+  const transitionToTab = React.useCallback((tab) => {
+    if (tab === currentTabRef.current) return;
+    const previousTab = currentTabRef.current;
+    currentTabRef.current = tab;
+    const transitionId = ++tabTransitionId.current;
+    tabTransitionOpacity.stopAnimation();
+    tabTransitionOffset.stopAnimation();
+    const direction = ['pmc', 'leela', 'me'].indexOf(tab) >
+      ['pmc', 'leela', 'me'].indexOf(previousTab) ? -1 : 1;
+    Animated.parallel([
+      Animated.timing(tabTransitionOpacity, {
+        toValue: 0,
+        duration: 110,
+        easing: Easing.in(Easing.quad),
+        useNativeDriver: true
+      }),
+      Animated.timing(tabTransitionOffset, {
+        toValue: direction * 18,
+        duration: 110,
+        easing: Easing.in(Easing.quad),
+        useNativeDriver: true
+      })
+    ]).start(({ finished }) => {
+      if (!finished || transitionId !== tabTransitionId.current) return;
+      setCurrentTab(tab);
+      tabTransitionOffset.setValue(-direction * 18);
+      Animated.parallel([
+        Animated.timing(tabTransitionOpacity, {
+          toValue: 1,
+          duration: 240,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true
+        }),
+        Animated.timing(tabTransitionOffset, {
+          toValue: 0,
+          duration: 240,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true
+        })
+      ]).start();
+    });
+  }, [tabTransitionOffset, tabTransitionOpacity]);
 
   useEffect(() => {
     const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
@@ -96,13 +142,21 @@ function AppContent() {
       handledNotificationResponse.current = responseId;
 
       const notificationData = response.notification.request.content.data;
-      if (notificationData?.type === 'reel' && notificationData.reelId) {
+      if (
+        (notificationData?.type === 'reel' || notificationData?.type === 'comment_reply') &&
+        notificationData.reelId
+      ) {
         setPendingReelId(String(notificationData.reelId));
-        setCurrentTab('leela');
+        setPendingCommentId(
+          notificationData.type === 'comment_reply' && notificationData.commentId
+            ? String(notificationData.commentId)
+            : null
+        );
+        transitionToTab('leela');
         return;
       }
 
-      setCurrentTab('me');
+      transitionToTab('me');
       setNotificationOpenRequest((current) => current + 1);
     };
 
@@ -137,7 +191,7 @@ function AppContent() {
       active = false;
       responseSubscription?.remove();
     };
-  }, []);
+  }, [transitionToTab]);
 
   const handleIncomingUrl = React.useCallback((url) => {
     const customSchemeMatch = url.match(/^pmcleela:\/\/reel\/([^/?#]+)\/?$/i);
@@ -164,8 +218,9 @@ function AppContent() {
     if (!reelId) return;
 
     setPendingReelId(reelId);
-    setCurrentTab('leela');
-  }, []);
+    setPendingCommentId(null);
+    transitionToTab('leela');
+  }, [transitionToTab]);
 
   useEffect(() => {
     let active = true;
@@ -184,37 +239,20 @@ function AppContent() {
 
   const handleReelOpened = React.useCallback((reelId) => {
     setPendingReelId((currentReelId) => currentReelId === reelId ? null : currentReelId);
+    setPendingCommentId(null);
   }, []);
 
-  const handleOpenReel = React.useCallback((reelId) => {
+  const handleOpenReel = React.useCallback((reelId, commentId = null) => {
     setPendingReelId(reelId);
-    setCurrentTab('leela');
-  }, []);
+    setPendingCommentId(commentId ? String(commentId) : null);
+    transitionToTab('leela');
+  }, [transitionToTab]);
 
   const ensureLeelaIsVisible = React.useCallback(() => {
-    setCurrentTab('leela');
-  }, []);
+    transitionToTab('leela');
+  }, [transitionToTab]);
 
-  const switchTab = (tab) => {
-    if (tab === currentTab) return;
-    const transitionId = ++tabTransitionId.current;
-    tabTransitionOpacity.stopAnimation();
-    Animated.timing(tabTransitionOpacity, {
-      toValue: 0,
-      duration: 90,
-      easing: Easing.out(Easing.quad),
-      useNativeDriver: true
-    }).start(({ finished }) => {
-      if (!finished || transitionId !== tabTransitionId.current) return;
-      setCurrentTab(tab);
-      Animated.timing(tabTransitionOpacity, {
-        toValue: 1,
-        duration: 180,
-        easing: Easing.out(Easing.quad),
-        useNativeDriver: true
-      }).start();
-    });
-  };
+  const switchTab = transitionToTab;
 
   React.useEffect(() => {
     interfaceTransitionOpacity.setValue(0);
@@ -388,6 +426,7 @@ function AppContent() {
     setActiveChatPartner(null);
     setAuthToken(null);
     setCurrentUser(null);
+    currentTabRef.current = 'pmc';
     setCurrentTab('pmc');
     try {
       await AsyncStorage.removeItem(USER_STORAGE_KEY);
@@ -451,7 +490,15 @@ function AppContent() {
       )}
 
       {/* Keep screens mounted so chat never disconnects when switching tabs */}
-      <Animated.View style={[styles.screensContainer, { opacity: tabTransitionOpacity }]}>
+      <Animated.View
+        style={[
+          styles.screensContainer,
+          {
+            opacity: tabTransitionOpacity,
+            transform: [{ translateX: tabTransitionOffset }]
+          }
+        ]}
+      >
         {/* Tab 1: PMC */}
         <View
           style={[
@@ -481,6 +528,7 @@ function AppContent() {
             authToken={authToken}
             isTabActive={currentTab === 'leela'}
             reelIdToOpen={pendingReelId}
+            commentIdToOpen={pendingCommentId}
             onReelOpened={handleReelOpened}
             onEnsureVisible={ensureLeelaIsVisible}
           />

@@ -689,13 +689,13 @@ export default function App() {
     <View style={styles.composerCard}>
       <View style={styles.notificationSettingRow}>
         <View style={styles.notificationSettingCopy}>
-          <Text style={styles.composerTitle}>Global notifications</Text>
+          <Text style={styles.composerTitle}>All student notifications</Text>
           <Text style={styles.composerHint}>
             {notificationsEnabled === null
               ? 'Loading the current setting…'
               : notificationsEnabled
-                ? 'Enabled: students receive push alerts and new in-app notification entries.'
-                : 'Paused: no new push alerts or in-app notification entries are created.'}
+                ? 'On: reel alerts, broadcasts, and app-update alerts can notify students.'
+                : 'Paused: reel alerts and every other student notification are stopped.'}
           </Text>
         </View>
         <Switch
@@ -711,7 +711,7 @@ export default function App() {
         <ActivityIndicator style={styles.notificationSettingsLoader} color="#ec4899" />
       ) : null}
       <Text style={styles.notificationSettingsNote}>
-        Reel uploads and app releases remain available while notifications are paused. Broadcasts cannot be sent until notifications are enabled.
+        Reel uploads and app releases can still be published, but students will not be notified while paused. Broadcasts cannot be sent until notifications are resumed.
       </Text>
     </View>
   );

@@ -25,6 +25,28 @@ const {
 const { sendPushToAll } = require('./pushNotifications');
 
 const CHAT_REPORT_BLOCK_MESSAGE = 'You have been blocked for two days because a girl reported you.';
+const REEL_PAGE_SIZE = 10;
+const COMMENT_PAGE_SIZE = 20;
+
+function encodePageCursor(cursor) {
+  return Buffer.from(JSON.stringify(cursor)).toString('base64url');
+}
+
+function decodePageCursor(value) {
+  if (!value) return null;
+  try {
+    const cursor = JSON.parse(Buffer.from(value, 'base64url').toString('utf8'));
+    if (
+      typeof cursor?.id !== 'string' ||
+      !cursor.id ||
+      typeof cursor.createdAt !== 'string' ||
+      !Number.isFinite(Date.parse(cursor.createdAt))
+    ) return undefined;
+    return cursor;
+  } catch {
+    return undefined;
+  }
+}
 
 if (process.env.NODE_ENV === 'production' && !process.env.DATABASE_URL) {
   throw new Error('DATABASE_URL is required in production. Configure the Supabase PostgreSQL connection string.');
@@ -196,8 +218,7 @@ app.get('/.well-known/assetlinks.json', (req, res) => {
 });
 app.get('/reel/:id', async (req, res) => {
   try {
-    const reels = await db.getReels();
-    const reel = reels.find(item => String(item.id) === req.params.id);
+    const reel = await db.getReel(req.params.id);
     if (!reel) {
       return res.status(404).type('html').send(
         '<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"><title>Reel unavailable</title></head><body><h1>Reel unavailable</h1><p>This reel may have been removed.</p></body></html>'
@@ -871,6 +892,42 @@ app.get('/api/announcements', requireStudent, async (req, res) => {
   }
 });
 
+app.get('/api/notifications', requireStudent, async (req, res) => {
+  try {
+    const [data, unreadCount] = await Promise.all([
+      db.getUserNotifications(req.studentUser.id, 50),
+      db.countUnreadUserNotifications(req.studentUser.id)
+    ]);
+    res.json({ success: true, data, unreadCount });
+  } catch (error) {
+    console.error('[Notifications] Could not load personal notifications:', error);
+    res.status(500).json({ success: false, message: 'Could not load your notifications.' });
+  }
+});
+
+app.patch('/api/notifications/read-all', requireStudent, async (req, res) => {
+  try {
+    const updated = await db.markUserNotificationRead(req.studentUser.id);
+    res.json({ success: true, updated });
+  } catch (error) {
+    console.error('[Notifications] Could not mark notifications as read:', error);
+    res.status(500).json({ success: false, message: 'Could not update your notifications.' });
+  }
+});
+
+app.patch('/api/notifications/:id/read', requireStudent, async (req, res) => {
+  try {
+    const updated = await db.markUserNotificationRead(req.studentUser.id, req.params.id);
+    if (!updated) {
+      return res.status(404).json({ success: false, message: 'Notification not found.' });
+    }
+    res.json({ success: true });
+  } catch (error) {
+    console.error(`[Notifications] Could not mark notification ${req.params.id} as read:`, error);
+    res.status(500).json({ success: false, message: 'Could not update this notification.' });
+  }
+});
+
 app.get('/api/admin/app-releases', requireAdmin, async (req, res) => {
   try {
     const releases = await db.getAppReleases(10);
@@ -1398,25 +1455,89 @@ app.get('/api/auth/deletion-request', requireStudent, async (req, res) => {
 // 7. GET LEELA REELS FEED
 app.get('/api/reels', allowOptionalStudent, async (req, res) => {
   try {
-    const host = req.get('host');
-    const protocol = req.protocol;
+    const requestedLimit = req.query.limit === undefined ? REEL_PAGE_SIZE : Number(req.query.limit);
+    if (!Number.isInteger(requestedLimit) || requestedLimit < 1 || requestedLimit > 50) {
+      return res.status(400).json({ success: false, message: 'Reel page size must be between 1 and 50.' });
+    }
+    const cursor = decodePageCursor(req.query.cursor);
+    if (cursor === undefined) {
+      return res.status(400).json({ success: false, message: 'Reel page cursor is invalid.' });
+    }
     const userId = req.studentUser?.id;
-    const rawReels = await db.getReels(userId);
-    const reels = await Promise.all(rawReels.map(async (r) => {
+    const page = await db.getReels(userId, {
+      limit: requestedLimit,
+      cursor,
+      includeComments: false
+    });
+    const reels = await Promise.all(page.data.map(async (r) => {
       if (r.videoStorageKey) {
         return { ...r, videoUrl: await r2Storage.getVideoUrl(r.videoStorageKey) };
       }
       let url = r.videoUrl;
       if (url && url.includes('/uploads/')) {
         const filename = url.split('/uploads/').pop();
-        url = `${protocol}://${host}/uploads/${filename}`;
+        url = `${req.protocol}://${req.get('host')}/uploads/${filename}`;
       }
       return { ...r, videoUrl: url };
     }));
-    res.json({ success: true, count: reels.length, data: reels });
+    res.json({
+      success: true,
+      count: reels.length,
+      data: reels,
+      hasMore: page.hasMore,
+      nextCursor: page.nextCursor ? encodePageCursor(page.nextCursor) : null
+    });
   } catch (err) {
     console.error('Reel feed error:', err);
     res.status(500).json({ success: false, message: 'Could not load reels.' });
+  }
+});
+
+app.get('/api/reel/:id', allowOptionalStudent, async (req, res) => {
+  try {
+    const reel = await db.getReelWithCounts(req.params.id, req.studentUser?.id);
+    if (!reel) return res.status(404).json({ success: false, message: 'Reel not found.' });
+    res.json({ success: true, data: await withPlayableVideoUrl(reel, req) });
+  } catch (error) {
+    console.error(`[Reels] Could not load reel ${req.params.id}:`, error);
+    res.status(500).json({ success: false, message: 'Could not load this reel.' });
+  }
+});
+
+app.get('/api/reels/:id/comments', requireStudent, async (req, res) => {
+  try {
+    const requestedLimit = req.query.limit === undefined ? COMMENT_PAGE_SIZE : Number(req.query.limit);
+    if (!Number.isInteger(requestedLimit) || requestedLimit < 1 || requestedLimit > 50) {
+      return res.status(400).json({ success: false, message: 'Comment page size must be between 1 and 50.' });
+    }
+    const cursor = decodePageCursor(req.query.cursor);
+    if (cursor === undefined) {
+      return res.status(400).json({ success: false, message: 'Comment page cursor is invalid.' });
+    }
+    if (!await db.getReel(req.params.id)) {
+      return res.status(404).json({ success: false, message: 'Reel not found.' });
+    }
+    const parentCommentId = typeof req.query.parentCommentId === 'string'
+      ? req.query.parentCommentId
+      : null;
+    if (parentCommentId && parentCommentId.length > 100) {
+      return res.status(400).json({ success: false, message: 'Parent comment ID is invalid.' });
+    }
+    const page = await db.getReelComments(req.params.id, {
+      parentCommentId,
+      cursor,
+      limit: requestedLimit
+    });
+    if (!page) return res.status(404).json({ success: false, message: 'Parent comment not found.' });
+    res.json({
+      success: true,
+      data: page.data,
+      hasMore: page.hasMore,
+      nextCursor: page.nextCursor ? encodePageCursor(page.nextCursor) : null
+    });
+  } catch (error) {
+    console.error(`[Reels] Could not load comments for reel ${req.params.id}:`, error);
+    res.status(500).json({ success: false, message: 'Could not load comments.' });
   }
 });
 
@@ -1807,7 +1928,7 @@ app.post('/api/reels/:id/report', requireStudent, async (req, res) => {
 // 9. POST COMMENT ON REEL
 app.post('/api/reels/:id/comments', requireStudent, async (req, res) => {
   try {
-    const { text, clientMutationId } = req.body || {};
+    const { text, clientMutationId, parentCommentId } = req.body || {};
     const cleanText = typeof text === 'string' ? text.trim() : '';
     if (!cleanText) {
       return res.status(400).json({ success: false, message: 'Comment text is required.' });
@@ -1816,26 +1937,61 @@ app.post('/api/reels/:id/comments', requireStudent, async (req, res) => {
       (typeof clientMutationId !== 'string' || clientMutationId.length > 100)) {
       return res.status(400).json({ success: false, message: 'Comment request ID is invalid.' });
     }
+    if (parentCommentId !== undefined &&
+      (typeof parentCommentId !== 'string' || !parentCommentId || parentCommentId.length > 100)) {
+      return res.status(400).json({ success: false, message: 'Parent comment ID is invalid.' });
+    }
     if (cleanText.length > 1000) {
       return res.status(400).json({ success: false, message: 'Comments cannot exceed 1,000 characters.' });
     }
-    const comment = await db.addComment(
+    const saved = await db.addComment(
       req.params.id,
       req.studentUser.leelaUsername || `Leela_${String(req.studentUser.id).slice(-8)}`,
       cleanText,
-      req.studentUser.academicYear
+      req.studentUser.academicYear,
+      req.studentUser.id,
+      parentCommentId || null
     );
-    if (!comment) {
-      return res.status(404).json({ success: false, message: 'Reel not found.' });
+    if (!saved) {
+      return res.status(404).json({
+        success: false,
+        message: parentCommentId ? 'Reel or parent comment not found.' : 'Reel not found.'
+      });
     }
+    const { comment, parentAuthorId, notification } = saved;
     const commentsCount = await db.countReelComments(req.params.id);
+    const parentReplyCount = parentCommentId
+      ? await db.countCommentReplies(parentCommentId)
+      : null;
     io.emit('reel_comment_added', {
       reelId: req.params.id,
       comment,
       commentsCount,
+      parentReplyCount,
       clientMutationId: clientMutationId || null
     });
-    res.json({ success: true, data: comment, commentsCount });
+    if (notification && parentAuthorId && parentAuthorId !== req.studentUser.id) {
+      try {
+        const tokens = await db.getPushTokens(parentAuthorId);
+        const delivery = await sendPushToAll(tokens, {
+          title: notification.title,
+          body: notification.message,
+          data: {
+            type: 'comment_reply',
+            reelId: req.params.id,
+            commentId: parentCommentId || null,
+            replyId: comment.id,
+            parentCommentId: parentCommentId || null,
+            notificationId: notification.id
+          }
+        }, { enabled: await db.getNotificationsEnabled() });
+        if (delivery.invalidTokens.length) await db.removePushTokens(delivery.invalidTokens);
+        console.info(`[Push] Reply notification ${notification.id}: ${delivery.sent} sent, ${delivery.failed} failed.`);
+      } catch (pushError) {
+        console.error(`[Push] Reply notification ${notification.id} was saved, but push delivery failed:`, pushError);
+      }
+    }
+    res.json({ success: true, data: comment, commentsCount, parentReplyCount });
   } catch (error) {
     console.error('Reel comment error:', error);
     res.status(500).json({ success: false, message: 'Could not save reel comment.' });

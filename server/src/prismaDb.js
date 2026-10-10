@@ -295,9 +295,12 @@ class PrismaDB {
         deletedUser = user.data;
         reels = await transaction.pmcReel.findMany({
           where: { creatorId: request.userId },
-          select: { data: true }
+          select: { id: true, data: true }
         });
         await transaction.pmcReel.deleteMany({ where: { creatorId: request.userId } });
+        await transaction.pmcUserNotification.deleteMany({
+          where: { reelId: { in: reels.map((reel) => reel.id) } }
+        });
         await transaction.pmcUser.delete({ where: { id: request.userId } });
       }
 
@@ -499,9 +502,12 @@ class PrismaDB {
       if (!user) return null;
       const reels = await transaction.pmcReel.findMany({
         where: { creatorId: userId },
-        select: { data: true }
+        select: { id: true, data: true }
       });
       await transaction.pmcReel.deleteMany({ where: { creatorId: userId } });
+      await transaction.pmcUserNotification.deleteMany({
+        where: { reelId: { in: reels.map((reel) => reel.id) } }
+      });
       await transaction.pmcUser.delete({ where: { id: userId } });
 
       const deletedReelFiles = [];
@@ -527,8 +533,11 @@ class PrismaDB {
     });
   }
 
-  async getPushTokens() {
-    return this.client.pmcPushToken.findMany({ select: { token: true, userId: true } });
+  async getPushTokens(userId = null) {
+    return this.client.pmcPushToken.findMany({
+      where: userId ? { userId } : {},
+      select: { token: true, userId: true }
+    });
   }
 
   async removePushTokens(tokens) {
@@ -561,7 +570,7 @@ class PrismaDB {
 
   async getAnnouncements(limit = null) {
     return this.client.pmcAnnouncement.findMany({
-      orderBy: { createdAt: 'desc' },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       ...(limit == null ? {} : { take: limit })
     });
   }
@@ -586,28 +595,107 @@ class PrismaDB {
     });
   }
 
-  async getReels(userId) {
+  async getReels(userId, options = {}) {
+    const { limit, cursor, includeComments = true } = options;
+    const where = cursor ? {
+      OR: [
+        { createdAt: { lt: new Date(cursor.createdAt) } },
+        { createdAt: new Date(cursor.createdAt), id: { lt: cursor.id } }
+      ]
+    } : {};
     const reels = await this.client.pmcReel.findMany({
-      orderBy: { createdAt: 'desc' },
+      where,
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      ...(Number.isInteger(limit) ? { take: limit + 1 } : {}),
       include: {
         _count: { select: { likes: true, comments: true } },
         likes: userId ? { where: { userId }, select: { userId: true } } : false,
-        comments: { orderBy: { createdAt: 'desc' } }
+        ...(includeComments ? { comments: { orderBy: { createdAt: 'desc' } } } : {})
       }
     });
-    return reels.map(({ data, _count, likes, comments }) => ({
+    const hasMore = Number.isInteger(limit) && reels.length > limit;
+    const page = hasMore ? reels.slice(0, limit) : reels;
+    const data = page.map(({ data, _count, likes, comments }) => ({
       ...data,
       likesCount: _count.likes,
       commentsCount: _count.comments,
       isLiked: (likes || []).length > 0,
-      comments: comments.map((comment) => ({
+      comments: includeComments ? comments.map((comment) => ({
         id: comment.id,
         user: comment.user,
         userYear: comment.userYear,
         text: comment.text,
+        parentCommentId: comment.parentCommentId,
         createdAt: comment.createdAt.toISOString()
-      }))
+      })) : []
     }));
+    if (!Number.isInteger(limit)) return data;
+    const lastReel = page[page.length - 1];
+    return {
+      data,
+      hasMore,
+      nextCursor: hasMore && lastReel
+        ? { id: lastReel.id, createdAt: lastReel.createdAt.toISOString() }
+        : null
+    };
+  }
+
+  async getReelWithCounts(reelId, userId) {
+    const reel = await this.client.pmcReel.findUnique({
+      where: { id: reelId },
+      include: {
+        _count: { select: { likes: true, comments: true } },
+        likes: userId ? { where: { userId }, select: { userId: true } } : false
+      }
+    });
+    if (!reel) return null;
+    return {
+      ...reel.data,
+      likesCount: reel._count.likes,
+      commentsCount: reel._count.comments,
+      isLiked: (reel.likes || []).length > 0,
+      comments: []
+    };
+  }
+
+  async getReelComments(reelId, { parentCommentId = null, cursor = null, limit = 20 } = {}) {
+    if (parentCommentId) {
+      const parent = await this.client.pmcReelComment.findFirst({
+        where: { id: parentCommentId, reelId, parentCommentId: null },
+        select: { id: true }
+      });
+      if (!parent) return null;
+    }
+    const where = { reelId, parentCommentId };
+    if (cursor) {
+      where.OR = [
+        { createdAt: { lt: new Date(cursor.createdAt) } },
+        { createdAt: new Date(cursor.createdAt), id: { lt: cursor.id } }
+      ];
+    }
+    const comments = await this.client.pmcReelComment.findMany({
+      where,
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      take: limit + 1,
+      include: { _count: { select: { replies: true } } }
+    });
+    const hasMore = comments.length > limit;
+    const page = hasMore ? comments.slice(0, limit) : comments;
+    return {
+      data: page.map((comment) => ({
+        id: comment.id,
+        user: comment.user,
+        userYear: comment.userYear,
+        text: comment.text,
+        parentCommentId: comment.parentCommentId,
+        replyCount: comment._count.replies,
+        createdAt: comment.createdAt.toISOString()
+      })),
+      hasMore,
+      nextCursor: hasMore && page.length
+        ? { id: page[page.length - 1].id, createdAt: page[page.length - 1].createdAt.toISOString() }
+        : null
+    };
   }
 
   async getReel(reelId) {
@@ -620,6 +708,7 @@ class PrismaDB {
       const reel = await transaction.pmcReel.findUnique({ where: { id: reelId } });
       if (!reel) return null;
       await transaction.pmcReel.delete({ where: { id: reelId } });
+      await transaction.pmcUserNotification.deleteMany({ where: { reelId } });
       await transaction.pmcAnnouncement.deleteMany({ where: { id: `reel_${reelId}` } });
       const deletedReelFiles = [];
       if (reel.data.videoUrl && reel.data.videoUrl.includes('/uploads/')) {
@@ -742,33 +831,109 @@ class PrismaDB {
     });
   }
 
-  async addComment(reelId, user, text, userYear) {
+  async addComment(reelId, user, text, userYear, authorId, parentCommentId = null) {
     const comment = {
       id: `c_${uuidv4()}`,
       user: user || 'Anonymous Student',
       userYear: userYear || 'Student',
-      text
+      text,
+      parentCommentId
     };
     try {
-      const savedComment = await this.client.pmcReelComment.create({
-        data: {
-          id: comment.id,
-          reelId,
-          user: comment.user,
-          userYear: comment.userYear,
-          text: comment.text
+      return await this.client.$transaction(async (transaction) => {
+        const parent = parentCommentId
+          ? await transaction.pmcReelComment.findFirst({
+            where: { id: parentCommentId, reelId, parentCommentId: null },
+            select: { id: true, userId: true }
+          })
+          : null;
+        if (parentCommentId && !parent) return null;
+
+        const savedComment = await transaction.pmcReelComment.create({
+          data: {
+            ...comment,
+            reelId,
+            userId: authorId
+          }
+        });
+        comment.createdAt = savedComment.createdAt.toISOString();
+        let notification = null;
+        if (parent?.userId && parent.userId !== authorId) {
+          notification = await transaction.pmcUserNotification.create({
+            data: {
+              id: `notification_${uuidv4()}`,
+              userId: parent.userId,
+              type: 'comment_reply',
+              title: `${comment.user} replied to your comment`,
+              message: text.slice(0, 180),
+              reelId,
+              commentId: parentCommentId
+            }
+          });
         }
+        return {
+          comment: { ...comment, replyCount: 0 },
+          parentAuthorId: parent?.userId || null,
+          notification
+        };
       });
-      comment.createdAt = savedComment.createdAt.toISOString();
     } catch (error) {
       if (error.code === 'P2003' || error.code === 'P2025') return null;
       throw error;
     }
-    return comment;
   }
 
   async countReelComments(reelId) {
     return this.client.pmcReelComment.count({ where: { reelId } });
+  }
+
+  countCommentReplies(parentCommentId) {
+    return this.client.pmcReelComment.count({ where: { parentCommentId } });
+  }
+
+  getUserNotifications(userId, limit = 50) {
+    return this.client.pmcUserNotification.findMany({
+      where: { userId },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      take: limit,
+      select: {
+        id: true,
+        type: true,
+        title: true,
+        message: true,
+        reelId: true,
+        commentId: true,
+        createdAt: true,
+        readAt: true
+      }
+    });
+  }
+
+  countUnreadUserNotifications(userId) {
+    return this.client.pmcUserNotification.count({ where: { userId, readAt: null } });
+  }
+
+  async markUserNotificationRead(userId, notificationId = null) {
+    if (notificationId) {
+      const existing = await this.client.pmcUserNotification.findFirst({
+        where: { id: notificationId, userId },
+        select: { id: true }
+      });
+      if (!existing) return 0;
+      await this.client.pmcUserNotification.updateMany({
+        where: { id: notificationId, userId, readAt: null },
+        data: { readAt: new Date() }
+      });
+      return 1;
+    }
+    const result = await this.client.pmcUserNotification.updateMany({
+      where: {
+        userId,
+        readAt: null
+      },
+      data: { readAt: new Date() }
+    });
+    return result.count;
   }
 }
 

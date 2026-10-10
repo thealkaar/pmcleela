@@ -29,6 +29,7 @@ See [Safety & Privacy](./SAFETY-AND-PRIVACY.md) for what anonymity means in PMC 
   * Mute / unmute audio toggle.
   * Animated like button (heart) with live counter.
   * Slide-up campus comments drawer to drop gossip & banter.
+  * The Leela feed loads reels in pages, and comments/replies load as needed. Students can reply to a comment; its author receives an in-app notification and, when push is enabled on their device, a private push notification that opens the reel and reply thread.
   * **"Post to Leela" Editor:** Trim a selected clip and choose 9:16, square, or full-frame output before publishing with a caption. Add music, choose a music segment to match the video length, preview the mix, and keep original audio, music, both, or mute. Publishing continues in the background with progress shown on Leela.
   * **Separate identities:** PMC chat and Leela have different usernames, editable from **Me**; reels and comments use the Leela username.
   * **Your reels:** Open **Me → My uploaded reels** to tap and watch or delete reels you posted.

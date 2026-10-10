@@ -69,6 +69,8 @@ export default function MeProfileScreen({
   const [deletionRequestError, setDeletionRequestError] = useState('');
   const [announcements, setAnnouncements] = useState([]);
   const [announcementsUserId, setAnnouncementsUserId] = useState(null);
+  const [personalNotifications, setPersonalNotifications] = useState([]);
+  const [unreadPersonalNotificationCount, setUnreadPersonalNotificationCount] = useState(0);
   const [appRelease, setAppRelease] = useState(null);
   const [isDownloadingUpdate, setIsDownloadingUpdate] = useState(false);
   const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
@@ -183,6 +185,33 @@ export default function MeProfileScreen({
     }
   }, [isTabActive, notificationOpenRequest]);
 
+  useEffect(() => {
+    if (!isTabActive || !notificationUserId || !authToken) return undefined;
+    let active = true;
+    const loadPersonalNotifications = async () => {
+      try {
+        const response = await fetch(`${getBaseUrl(serverHost)}/api/notifications`, {
+          headers: { Authorization: 'Bearer ' + authToken }
+        });
+        const result = await response.json();
+        if (!response.ok || !result.success) {
+          throw new Error(result.message || 'Could not load notifications.');
+        }
+        if (!active) return;
+        setPersonalNotifications(result.data);
+        setUnreadPersonalNotificationCount(Number(result.unreadCount) || 0);
+      } catch (error) {
+        console.warn('[Notifications] Could not refresh personal notifications:', error.message);
+      }
+    };
+    loadPersonalNotifications();
+    const interval = setInterval(loadPersonalNotifications, 60 * 1000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [authToken, isTabActive, notificationUserId, serverHost]);
+
   const installUpdate = async () => {
     if (Platform.OS !== 'android' || !appRelease?.downloadUrl) {
       Alert.alert('Update unavailable', 'App updates can be installed from this screen on Android.');
@@ -269,11 +298,31 @@ export default function MeProfileScreen({
   );
   const notificationCount = isLoadingDismissedNotifications
     ? 0
-    : visibleAnnouncements.length + Number(hasAppUpdate);
+    : visibleAnnouncements.length + Number(hasAppUpdate) + unreadPersonalNotificationCount;
 
   const clearNotifications = async () => {
     if (!notificationStorageKey || !notificationUserId || isLoadingDismissedNotifications) {
       Alert.alert('Could not clear notifications', 'Notification settings are not ready. Please try again.');
+      return;
+    }
+
+    try {
+      const response = await fetch(`${getBaseUrl(serverHost)}/api/notifications/read-all`, {
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer ' + authToken }
+      });
+      const result = await response.json();
+      if (!response.ok || !result.success) {
+        throw new Error(result.message || 'Could not clear personal notifications.');
+      }
+      setPersonalNotifications((prev) => prev.map((item) => ({
+        ...item,
+        readAt: item.readAt || new Date().toISOString()
+      })));
+      setUnreadPersonalNotificationCount(0);
+    } catch (error) {
+      console.error('[Notifications] Could not mark personal notifications as read:', error);
+      Alert.alert('Could not clear notifications', error.message || 'Please try again.');
       return;
     }
 
@@ -297,6 +346,35 @@ export default function MeProfileScreen({
     } catch (error) {
       console.error('[Notifications] Could not clear dismissed items:', error);
       Alert.alert('Could not clear notifications', 'Your notifications could not be cleared on this device. Please try again.');
+    }
+  };
+
+  const openReplyNotification = async (item) => {
+    try {
+      if (!item.readAt) {
+        const response = await fetch(
+          `${getBaseUrl(serverHost)}/api/notifications/${encodeURIComponent(item.id)}/read`,
+          {
+            method: 'PATCH',
+            headers: { Authorization: 'Bearer ' + authToken }
+          }
+        );
+        const result = await response.json();
+        if (!response.ok || !result.success) {
+          throw new Error(result.message || 'Could not mark this notification as read.');
+        }
+        setPersonalNotifications((prev) => prev.map((notification) => (
+          notification.id === item.id
+            ? { ...notification, readAt: new Date().toISOString() }
+            : notification
+        )));
+        setUnreadPersonalNotificationCount((count) => Math.max(0, count - 1));
+      }
+      setShowNotifications(false);
+      onOpenReel?.(item.reelId, item.commentId);
+    } catch (error) {
+      console.error('[Notifications] Could not open reply notification:', error);
+      Alert.alert('Could not open notification', error.message || 'Please try again.');
     }
   };
 
@@ -836,7 +914,27 @@ export default function MeProfileScreen({
                 </TouchableOpacity>
               ))}
 
-              {!hasAppUpdate && visibleAnnouncements.length === 0 && (
+              {personalNotifications.map(item => (
+                <TouchableOpacity
+                  key={item.id}
+                  style={[styles.announcementCard, !item.readAt && styles.unreadNotificationCard]}
+                  activeOpacity={0.8}
+                  onPress={() => openReplyNotification(item)}
+                >
+                  <View style={styles.notificationItemHeading}>
+                    <View style={styles.notificationItemIcon}>
+                      <Ionicons name="chatbubble-ellipses-outline" size={16} color="#f472b6" />
+                    </View>
+                    <Text style={styles.updateTitle}>{item.title}</Text>
+                  </View>
+                  <Text style={styles.announcementMessage}>{item.message}</Text>
+                  <Text style={styles.announcementDate}>
+                    {item.createdAt ? new Date(item.createdAt).toLocaleString() : 'Comment reply'}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+
+              {!hasAppUpdate && visibleAnnouncements.length === 0 && personalNotifications.length === 0 && (
                 <View style={styles.emptyNotifications}>
                   <View style={styles.emptyNotificationIcon}>
                     <Ionicons name="notifications-off-outline" size={25} color="#f472b6" />
@@ -1314,6 +1412,9 @@ const styles = StyleSheet.create({
     borderColor: '#252a36',
     padding: 15,
     marginBottom: 10
+  },
+  unreadNotificationCard: {
+    borderColor: 'rgba(236, 72, 153, 0.5)'
   },
   updateCard: {
     backgroundColor: '#17101a',
