@@ -6,6 +6,7 @@ const { v4: uuidv4 } = require('uuid');
 const ACCOUNT_NOT_FOUND = 'Account not found. Please check your scholar number or register.';
 const CHAT_REPORT_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 const CHAT_REPORT_COOLDOWN_MESSAGE = 'You can submit only one PMC chat report every 24 hours.';
+const ACCOUNT_DELETION_TRANSACTION_OPTIONS = { maxWait: 10_000, timeout: 30_000 };
 const scrypt = promisify(crypto.scrypt);
 
 function isAnonymousNameUniqueError(error) {
@@ -323,7 +324,7 @@ class PrismaDB {
         deletedReelStorageKeys,
         request: updatedRequest
       };
-    });
+    }, ACCOUNT_DELETION_TRANSACTION_OPTIONS);
   }
 
   async loginUser(identifier, password) {
@@ -520,7 +521,7 @@ class PrismaDB {
         }
       }
       return { deletedUser: user.data, deletedReelFiles, deletedReelStorageKeys };
-    });
+    }, ACCOUNT_DELETION_TRANSACTION_OPTIONS);
   }
 
   async registerPushToken(userId, token, platform) {
