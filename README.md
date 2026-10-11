@@ -1,5 +1,5 @@
-# 🌟 PMC लीला
-> **The Official Campus Social App for MANIT Bhopal Students**
+#  PMC लीला
+> **The Campus Social App for MANIT Bhopal Students**
 
 **PMC लीला** is a mobile application built with **React Native (Expo)** and **Node.js / Socket.io**, designed around MANIT campus culture.
 
